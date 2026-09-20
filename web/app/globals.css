@@ -54,8 +54,8 @@ button { color:inherit; }
 @media(max-width:1100px){.top-stats{gap:18px}.single-observer{display:none}.event-rail.with-detail{display:none}.node-detail{right:18px}.left-panel{width:230px}.map-tools,.map-caption{left:260px}}
 @media(max-width:760px){.atlas-shell{min-height:500px}.topbar{height:60px;padding:0 10px;grid-template-columns:1fr auto}.workspace{height:calc(100% - 60px)}.top-stats,.demo-pill,.brand-sub{display:none}.mobile-only{display:grid}.brand-block{gap:7px}.brand-mark{width:30px;height:30px}.text-scale-control span{display:none}.text-scale-control button{width:25px}.left-panel{left:0;top:0;bottom:0;width:270px;transform:translateX(-105%);transition:.25s;z-index:15}.left-panel.panel-open{transform:none}.close-mobile{display:block}.map-tools{left:10px;top:10px}.map-caption{display:none}.event-rail{left:10px;right:10px;top:auto;bottom:58px;height:185px;width:auto}.event-list{display:flex;overflow-x:auto}.event-item{min-width:255px;border-right:1px solid var(--line)}.node-detail{left:10px;right:10px;top:10px;width:auto}.timeline{left:10px;right:10px}.timeline-label,.timeline time{display:none}.maplibregl-ctrl-bottom-left{bottom:245px}.maplibregl-ctrl-bottom-right{bottom:245px}}
 
-.mesh-marker.rf-active .marker-pulse { animation:rf-burst 1.25s ease-out infinite;box-shadow:0 0 16px var(--marker-color); }
-.mesh-marker.rf-active .marker-core { box-shadow:0 0 22px var(--marker-color); }
+.mesh-marker.recent-activity .marker-core { box-shadow:0 0 11px 1px var(--marker-color); }
+.mesh-marker.packet-active .marker-core { box-shadow:0 0 22px 3px var(--marker-color); }
 .position-age { display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding:8px 10px;border:1px solid rgba(69,224,111,.2);background:rgba(69,224,111,.04);font:700 8px ui-monospace,monospace;color:#647d84; }
 .position-age strong { color:#45e06f;font-size:9px; }
 .position-age.stale { border-color:rgba(255,122,26,.3);background:rgba(255,122,26,.05); }
@@ -68,8 +68,6 @@ button { color:inherit; }
 .packet-particle { display:block!important;width:5px!important;height:5px!important;border-radius:50%;pointer-events:none;background:#ff7a1a;border:1px solid rgba(255,255,255,.78);box-shadow:0 0 7px 2px rgba(255,122,26,.48);z-index:50!important; }
 .packet-particle.addressed,.packet-particle.mqtt { background:#a56bff;box-shadow:0 0 10px 3px rgba(165,107,255,.5); }
 .packet-particle.rf_text { background:#45e06f;box-shadow:0 0 10px 3px rgba(69,224,111,.5); }
-.mesh-marker.aging { opacity:.62; }
-.mesh-marker.stale { opacity:.3;filter:saturate(.45); }
 .animation-status { position:absolute;z-index:8;top:70px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:7px;padding:7px 10px;border:1px solid rgba(255,122,26,.25);background:rgba(4,12,15,.92);color:#748991;font:700 8px ui-monospace,monospace;letter-spacing:.08em;pointer-events:none; }
 .animation-status.active { color:#ff9a4d;border-color:rgba(255,122,26,.7);box-shadow:0 0 18px rgba(255,122,26,.18); }
 .follow-status { position:absolute;z-index:12;top:70px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:7px;padding:7px 8px 7px 10px;border:1px solid rgba(255,122,26,.72);background:rgba(4,12,15,.96);box-shadow:0 0 20px rgba(255,122,26,.2);color:#ffad70;font:700 8px ui-monospace,monospace;letter-spacing:.07em; }

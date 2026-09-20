@@ -631,7 +631,7 @@ export default function Home() {
     for (const layer of ["terrain-prediction-fill", "terrain-prediction-line"]) {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showPrediction));
     }
-    for (const layer of ["node-clusters", "node-cluster-count", "node-points-wide", "node-points-hit"]) {
+    for (const layer of ["node-clusters", "node-cluster-count", "node-points-activity-glow", "node-points-wide", "node-points-hit"]) {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showNodes));
     }
     for (const layer of ["recent-rf-links-glow", "recent-rf-links", "recent-rf-links-confirmed", "recent-rf-links-trace", "rf-particles-glow", "rf-particles"]) {
@@ -741,12 +741,24 @@ export default function Home() {
         paint: { "text-color": "#f1eee9" },
       });
       instance.addLayer({
+        id: "node-points-activity-glow", type: "circle", source: "atlas-nodes", maxzoom: 10.5,
+        filter: ["all", ["!", ["has", "point_count"]], ["!=", ["get", "activity"], "idle"]],
+        paint: {
+          "circle-radius": ["match", ["get", "activity"], "active", 9, 6],
+          "circle-color": ["get", "color"],
+          "circle-opacity": ["match", ["get", "activity"], "active", 0.28, 0.12],
+          "circle-blur": 0.75,
+        },
+      });
+      instance.addLayer({
         id: "node-points-wide", type: "circle", source: "atlas-nodes", maxzoom: 10.5,
         filter: ["!", ["has", "point_count"]],
         paint: {
-          "circle-radius": 3.5, "circle-color": ["get", "color"],
-          "circle-opacity": ["match", ["get", "freshness"], "fresh", 0.95, "aging", 0.62, 0.3],
-          "circle-stroke-color": "#071116", "circle-stroke-width": 1,
+          "circle-radius": ["match", ["get", "activity"], "active", 4.25, "recent", 3.85, 3.5],
+          "circle-color": ["get", "color"],
+          "circle-opacity": ["match", ["get", "activity"], "active", 1, "recent", 0.95, 0.78],
+          "circle-stroke-color": "#071116",
+          "circle-stroke-width": ["match", ["get", "activity"], "active", 1.25, 1],
         },
       });
       instance.addLayer({
@@ -921,6 +933,17 @@ export default function Home() {
   useEffect(() => {
     if (!mapReady || !map.current) return;
     const source = map.current.getSource("atlas-nodes") as GeoJSONSource | undefined;
+    const now = Date.now();
+    const latestActivity = new Map<string, number>();
+    for (const item of activity) {
+      if (item.source !== "RF_OBSERVED" && item.source !== "MQTT_NETWORK" && item.source !== "LOCAL_TX") continue;
+      const timestamp = new Date(item.observed_at).getTime();
+      for (const nodeNum of [item.from_node, item.to_node, item.observer_node_num]) {
+        if (nodeNum === undefined) continue;
+        const id = `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}`;
+        latestActivity.set(id, Math.max(timestamp, latestActivity.get(id) ?? 0));
+      }
+    }
     source?.setData({
       type: "FeatureCollection",
       features: displayedNodes
@@ -928,16 +951,16 @@ export default function Home() {
         .filter((node) => node.provenance !== "REMOTE GATEWAY RF" || showRemoteRf)
         .filter((node) => node.provenance !== "MQTT NETWORK" || showMqtt)
         .map((node) => {
-        const age = node.observedAt ? Date.now() - new Date(node.observedAt).getTime() : 0;
-        const freshness = age <= 60 * 60_000 ? "fresh" : age <= 24 * 60 * 60_000 ? "aging" : "stale";
+        const activityAge = now - (latestActivity.get(node.id) ?? 0);
+        const activityLevel = activityAge <= 15_000 ? "active" : activityAge <= 15 * 60_000 ? "recent" : "idle";
         return {
           type: "Feature" as const,
-          properties: { id: node.id, label: node.label, color: node.color, freshness, provenance: node.provenance },
+          properties: { id: node.id, label: node.label, color: node.color, activity: activityLevel, provenance: node.provenance },
           geometry: { type: "Point" as const, coordinates: [node.lng, node.lat] },
         };
       }),
     });
-  }, [displayedNodes, mapReady, showMqtt, showRemoteRf, showRf]);
+  }, [activity, displayedNodes, mapReady, showMqtt, showRemoteRf, showRf]);
 
   useEffect(() => {
     const instance = map.current;
@@ -957,16 +980,18 @@ export default function Home() {
           (item.source === "RF_OBSERVED" || item.source === "MQTT_NETWORK" || item.source === "LOCAL_TX")
           && Date.now() - new Date(item.observed_at).getTime() < 15_000,
         );
-        const activeRf = activeEvents.some((item) => item.source === "RF_OBSERVED" && item.from_node !== undefined
-          && `!${(item.from_node >>> 0).toString(16).padStart(8, "0")}` === node.id);
         const isEndpoint = activeEvents.some((item) =>
-          [item.from_node, item.to_node].some((nodeNum) => nodeNum !== undefined
+          [item.from_node, item.to_node, item.observer_node_num].some((nodeNum) => nodeNum !== undefined
+            && `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}` === node.id),
+        );
+        const isRecentlyActive = activity.some((item) =>
+          (item.source === "RF_OBSERVED" || item.source === "MQTT_NETWORK" || item.source === "LOCAL_TX")
+          && Date.now() - new Date(item.observed_at).getTime() < 15 * 60_000
+          && [item.from_node, item.to_node, item.observer_node_num].some((nodeNum) => nodeNum !== undefined
             && `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}` === node.id),
         );
         const isActiveObserver = observerNodes.some((observer) => observer.id === node.id) && activeEvents.length > 0;
-        const age = node.observedAt ? Date.now() - new Date(node.observedAt).getTime() : 0;
-        const freshness = age <= 60 * 60_000 ? "fresh" : age <= 24 * 60 * 60_000 ? "aging" : "stale";
-        el.className = `mesh-marker ${freshness} ${observerNodes.some((observer) => observer.id === node.id) ? "observer-marker" : ""} ${activeRf ? "rf-active" : ""}`;
+        el.className = `mesh-marker ${observerNodes.some((observer) => observer.id === node.id) ? "observer-marker" : ""} ${isRecentlyActive ? "recent-activity" : ""} ${isEndpoint ? "packet-active" : ""}`;
         el.style.zIndex = isEndpoint ? "30" : isActiveObserver ? "25" : "1";
         el.style.setProperty("--marker-color", node.color);
         el.setAttribute("aria-label", `${node.label}, ${node.role}`);
