@@ -711,7 +711,7 @@ export default function Home() {
         data: { type: "FeatureCollection", features: [] },
       });
       instance.addSource("atlas-nodes", {
-        type: "geojson", cluster: true, clusterMaxZoom: 9, clusterRadius: 38,
+        type: "geojson", cluster: true, clusterMaxZoom: 8, clusterRadius: 24,
         clusterProperties: {
           direct_count: ["+", ["case", ["==", ["get", "provenance"], "RF OBSERVED"], 1, 0]],
           remote_count: ["+", ["case", ["==", ["get", "provenance"], "REMOTE GATEWAY RF"], 1, 0]],
@@ -720,7 +720,7 @@ export default function Home() {
         data: { type: "FeatureCollection", features: [] },
       });
       instance.addLayer({
-        id: "node-clusters", type: "circle", source: "atlas-nodes", maxzoom: 10,
+        id: "node-clusters", type: "circle", source: "atlas-nodes", maxzoom: 9,
         filter: ["has", "point_count"],
         paint: {
           "circle-color": ["case",
@@ -735,13 +735,13 @@ export default function Home() {
         },
       });
       instance.addLayer({
-        id: "node-cluster-count", type: "symbol", source: "atlas-nodes", maxzoom: 10,
+        id: "node-cluster-count", type: "symbol", source: "atlas-nodes", maxzoom: 9,
         filter: ["has", "point_count"],
         layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Open Sans Regular"], "text-size": 10 },
         paint: { "text-color": "#f1eee9" },
       });
       instance.addLayer({
-        id: "node-points-wide", type: "circle", source: "atlas-nodes", maxzoom: 10,
+        id: "node-points-wide", type: "circle", source: "atlas-nodes", maxzoom: 10.5,
         filter: ["!", ["has", "point_count"]],
         paint: {
           "circle-radius": 3.5, "circle-color": ["get", "color"],
@@ -750,7 +750,7 @@ export default function Home() {
         },
       });
       instance.addLayer({
-        id: "node-points-hit", type: "circle", source: "atlas-nodes", maxzoom: 10,
+        id: "node-points-hit", type: "circle", source: "atlas-nodes", maxzoom: 10.5,
         filter: ["!", ["has", "point_count"]],
         paint: { "circle-radius": 14, "circle-color": "rgba(0,0,0,0)", "circle-opacity": 0 },
       });
