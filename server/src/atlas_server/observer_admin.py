@@ -24,13 +24,18 @@ def load(path: Path) -> dict[str, str]:
 
 def save(path: Path, tokens: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.stat() if path.exists() else None
     descriptor, temporary_name = tempfile.mkstemp(prefix=".observer-tokens-", dir=path.parent)
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(tokens, stream, indent=2, sort_keys=True)
             stream.write("\n")
-        os.chmod(temporary, 0o600)
+        if existing is None:
+            os.chmod(temporary, 0o600)
+        else:
+            os.chown(temporary, existing.st_uid, existing.st_gid)
+            os.chmod(temporary, existing.st_mode & 0o777)
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

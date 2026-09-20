@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 
 from atlas_server import observer_admin
@@ -49,3 +50,15 @@ def test_issue_list_and_revoke_observer_token(tmp_path, monkeypatch, capsys) -> 
     )
     assert observer_admin.main() == 0
     assert json.loads(path.read_text()) == {}
+
+
+def test_existing_token_file_permissions_are_preserved(tmp_path) -> None:
+    path = tmp_path / "tokens.json"
+    path.write_text("{}\n", encoding="utf-8")
+    path.chmod(0o640)
+
+    observer_admin.save(path, {"SITE1": "token"})
+
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert path.stat().st_uid == os.getuid()
+    assert path.stat().st_gid == os.getgid()
