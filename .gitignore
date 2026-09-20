@@ -8,6 +8,8 @@ captures/
 data/
 server/data/
 build/
+dist/
+release/
 *.ndjson
 *.stream.bin
 

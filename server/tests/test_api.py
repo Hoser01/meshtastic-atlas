@@ -121,6 +121,42 @@ def test_observer_specific_ingestion_token(tmp_path) -> None:
         )
 
 
+def test_file_backed_observer_token_and_health(tmp_path, monkeypatch) -> None:
+    tokens = tmp_path / "observer-tokens.json"
+    tokens.write_text('{"SITE1":"site-token"}\n', encoding="utf-8")
+    monkeypatch.setenv("ATLAS_OBSERVER_TOKENS_FILE", str(tokens))
+    monkeypatch.setenv("ATLAS_OBSERVER_CONFIG", '{"SITE1":{"short_name":"S1"}}')
+    heartbeat = {
+        "schema_version": 1,
+        "event_id": "c" * 32,
+        "event": "collector_heartbeat",
+        "observer_id": "SITE1",
+        "observer_node_num": 123,
+        "observer_node_id": "!0000007b",
+        "observed_at": "2026-09-20T15:00:00Z",
+        "source": "UNKNOWN",
+        "mux_connected": True,
+        "delivery_queue_depth": 0,
+        "collector_uptime_seconds": 120,
+        "mux_frames": 42,
+        "connection_epoch": 2,
+    }
+    with TestClient(create_app(tmp_path / "atlas.db")) as client:
+        assert (
+            client.post(
+                "/api/v1/events",
+                json=heartbeat,
+                headers={"X-Atlas-Ingest-Token": "site-token"},
+            ).status_code
+            == 202
+        )
+        health = client.get("/api/v1/observer-health").json()[0]
+        assert health["observer_id"] == "SITE1"
+        assert health["short_name"] == "S1"
+        assert health["mux_frames"] == 42
+        assert health["delivery_queue_depth"] == 0
+
+
 def test_measured_coverage_api_includes_distance_and_age(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv(
         "ATLAS_OBSERVER_CONFIG",

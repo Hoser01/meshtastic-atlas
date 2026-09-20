@@ -17,6 +17,13 @@ from pathlib import Path
 from . import __version__
 
 VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}(?:[-+][A-Za-z0-9.-]+)?$")
+DEFAULT_MANIFEST_URL = (
+    "https://github.com/Hoser01/meshtastic-atlas/releases/latest/download/observer-manifest.json"
+)
+
+
+def version_key(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.split(r"[-+]", value, maxsplit=1)[0].split("."))
 
 
 def run(command: list[str]) -> None:
@@ -24,9 +31,9 @@ def run(command: list[str]) -> None:
 
 
 def main() -> int:
-    manifest_url = os.environ.get("ATLAS_UPDATE_MANIFEST_URL", "").strip()
-    if not manifest_url:
-        print("ATLAS_UPDATE_MANIFEST_URL is not configured; update skipped")
+    manifest_url = os.environ.get("ATLAS_UPDATE_MANIFEST_URL", DEFAULT_MANIFEST_URL).strip()
+    if manifest_url.lower() == "disabled":
+        print("ATLAS observer automatic updates are disabled")
         return 0
     if not manifest_url.startswith("https://"):
         raise SystemExit("update manifest must use HTTPS")
@@ -42,8 +49,8 @@ def main() -> int:
         raise SystemExit("invalid update manifest")
     if not re.fullmatch(r"[0-9a-f]{64}", expected):
         raise SystemExit("update manifest is missing a valid SHA-256 digest")
-    if version == __version__:
-        print(f"ATLAS observer {version} is current")
+    if version_key(version) <= version_key(__version__):
+        print(f"ATLAS observer {__version__} is current; feed offers {version}")
         return 0
     releases = root / "releases"
     releases.mkdir(parents=True, exist_ok=True)

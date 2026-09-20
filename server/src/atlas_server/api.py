@@ -54,14 +54,23 @@ def create_app(
     broker = LiveBroker()
     observer_config = json.loads(os.environ.get("ATLAS_OBSERVER_CONFIG", "{}"))
     if observer_tokens is None:
-        observer_tokens = json.loads(os.environ.get("ATLAS_OBSERVER_TOKENS", "{}"))
+        tokens_file = os.environ.get("ATLAS_OBSERVER_TOKENS_FILE")
+        if tokens_file:
+            with Path(tokens_file).open(encoding="utf-8") as stream:
+                observer_tokens = json.load(stream)
+        else:
+            observer_tokens = json.loads(os.environ.get("ATLAS_OBSERVER_TOKENS", "{}"))
+    if not isinstance(observer_tokens, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in observer_tokens.items()
+    ):
+        raise RuntimeError("observer tokens must be a string-to-string JSON object")
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.1", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -89,6 +98,33 @@ def create_app(
         for row in rows:
             row.update(observer_config.get(row["observer_id"], {}))
         return rows
+
+    @app.get("/api/v1/observer-health")
+    def observer_health() -> list[dict[str, Any]]:
+        rows = {row["observer_id"]: row for row in store.list_observer_health()}
+        now = datetime.now(timezone.utc)
+        for observer_id, configured in observer_config.items():
+            row = rows.setdefault(observer_id, {"observer_id": observer_id, "last_heartbeat": None})
+            row.update({key: value for key, value in configured.items() if key not in row})
+        for row in rows.values():
+            timestamp = row.get("last_heartbeat")
+            age = None
+            if timestamp:
+                age = max(
+                    0.0,
+                    (
+                        now - datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    ).total_seconds(),
+                )
+            row["heartbeat_age_seconds"] = age
+            row["status"] = (
+                "offline"
+                if age is None or age > 180
+                else "degraded"
+                if not row.get("mux_connected") or row.get("delivery_queue_depth", 0) > 0
+                else "online"
+            )
+        return sorted(rows.values(), key=lambda row: row["observer_id"])
 
     @app.get("/api/v1/transmissions")
     def transmissions(

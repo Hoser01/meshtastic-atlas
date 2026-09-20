@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlas-server"
-version = "0.3.0"
+version = "0.3.1"
 description = "Central ATLAS event ingestion and transmission correlation"
 requires-python = ">=3.10"
 license = "GPL-3.0-only"
@@ -19,6 +19,7 @@ dev = ["httpx>=0.28,<1", "pytest>=8,<10"]
 [project.scripts]
 atlas-server-ingest = "atlas_server.cli:main"
 atlas-server = "atlas_server.run:main"
+atlas-observer-token = "atlas_server.observer_admin:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

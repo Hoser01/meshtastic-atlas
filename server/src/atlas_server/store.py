@@ -779,6 +779,36 @@ class AtlasStore:
                 )
             ]
 
+    def list_observer_health(self) -> list[dict[str, Any]]:
+        """Return the latest collector heartbeat and RF activity for each observer."""
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT e.observer_id, e.observed_at AS last_heartbeat,
+                       json_extract(e.raw_event, '$.observer_node_num') AS observer_node_num,
+                       json_extract(e.raw_event, '$.mux_connected') AS mux_connected,
+                       json_extract(e.raw_event, '$.delivery_queue_depth') AS delivery_queue_depth,
+                       json_extract(e.raw_event, '$.collector_uptime_seconds') AS collector_uptime_seconds,
+                       json_extract(e.raw_event, '$.mux_frames') AS mux_frames,
+                       json_extract(e.raw_event, '$.connection_epoch') AS connection_epoch,
+                       (SELECT max(o.observed_at) FROM observations o
+                        WHERE o.observer_id=e.observer_id) AS last_rf_observation,
+                       (SELECT count(*) FROM events errors
+                        WHERE errors.observer_id=e.observer_id
+                          AND errors.event_type='observer_connection_error'
+                          AND errors.observed_at>=datetime('now', '-24 hours')) AS errors_24h
+                FROM events e
+                JOIN (
+                    SELECT observer_id, max(observed_at) AS latest
+                    FROM events WHERE event_type='collector_heartbeat'
+                    GROUP BY observer_id
+                ) newest ON newest.observer_id=e.observer_id AND newest.latest=e.observed_at
+                WHERE e.event_type='collector_heartbeat'
+                ORDER BY e.observer_id
+                """
+            )
+            return [dict(row) for row in rows]
+
     def list_positions(
         self, limit: int = 500, node_num: int | None = None, before: str | None = None
     ) -> list[dict[str, Any]]:
