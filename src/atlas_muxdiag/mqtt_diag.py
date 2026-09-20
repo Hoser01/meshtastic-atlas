@@ -9,11 +9,10 @@ import json
 import logging
 import os
 import signal
-import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any
+from typing import Any
 
 import paho.mqtt.client as mqtt
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -199,7 +198,7 @@ class DiagnosticCollector:
         self,
         args: argparse.Namespace,
         keys: dict[int, tuple[str, bytes]],
-        stream: IO[str],
+        stream: Any,
         event_writer: Any | None = None,
     ) -> None:
         self.args = args
@@ -253,8 +252,7 @@ class DiagnosticCollector:
                 "topic": message.topic,
                 "error": type(exc).__name__,
             }
-        self.stream.write(json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n")
-        self.stream.flush()
+        self.stream.write(record)
         if self.event_writer is not None:
             for event in self.normalizer.process(record):
                 try:
@@ -297,8 +295,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--output", type=Path)
     result.add_argument("--events-output", type=Path)
     result.add_argument("--api-url", help="optional ATLAS /api/v1/events ingestion URL")
-    result.add_argument("--duration", type=float, default=300)
-    result.add_argument("--max-messages", type=int, default=0)
+    result.add_argument("--duration", type=float, default=0, help="seconds; 0 means unlimited")
+    result.add_argument("--max-messages", type=int, default=0, help="0 means unlimited")
+    result.add_argument("--output-max-bytes", type=int, default=100 * 1024 * 1024)
+    result.add_argument("--output-backups", type=int, default=3)
+    result.add_argument("--spool", type=Path, help="persistent central-delivery queue")
+    result.add_argument("--spool-max-events", type=int, default=50_000)
+    result.add_argument("--spool-max-bytes", type=int, default=256 * 1024 * 1024)
+    result.add_argument("--api-timeout", type=float, default=5.0)
     result.add_argument("-v", "--verbose", action="store_true")
     return result
 
@@ -307,6 +311,16 @@ def main() -> int:
     args = parser().parse_args()
     if args.host != "mqtt.lzmesh.com":
         parser().error("this diagnostic is restricted to mqtt.lzmesh.com")
+    if (
+        args.duration < 0
+        or args.max_messages < 0
+        or args.output_max_bytes <= 0
+        or args.output_backups < 0
+        or args.spool_max_events <= 0
+        or args.spool_max_bytes <= 0
+        or args.api_timeout <= 0
+    ):
+        parser().error("duration and max-messages must be nonnegative; storage limits must be positive")
     if not args.username or not args.password:
         parser().error("set ATLAS_MQTT_USERNAME and ATLAS_MQTT_PASSWORD")
     keys = load_channel_keys(args.keys_file)
@@ -317,26 +331,37 @@ def main() -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    from .collector_cli import NormalizedWriter
+
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        stream: IO[str] = args.output.open("a", encoding="utf-8", buffering=1)
-    else:
-        stream = sys.stdout
+    stream = NormalizedWriter(
+        args.output,
+        output_max_bytes=args.output_max_bytes,
+        output_backups=args.output_backups,
+    )
     event_writer = None
     if args.events_output or args.api_url:
-        from .collector_cli import NormalizedWriter
-
         if args.events_output:
             args.events_output.parent.mkdir(parents=True, exist_ok=True)
-        event_writer = NormalizedWriter(args.events_output, args.api_url, api_token)
+        event_writer = NormalizedWriter(
+            args.events_output,
+            args.api_url,
+            api_token,
+            spool=args.spool,
+            output_max_bytes=args.output_max_bytes,
+            output_backups=args.output_backups,
+            spool_max_events=args.spool_max_events,
+            spool_max_bytes=args.spool_max_bytes,
+            api_timeout=args.api_timeout,
+        )
     collector = DiagnosticCollector(args, keys, stream, event_writer)
     signal.signal(signal.SIGINT, lambda *_: collector.stop_event.set())
     signal.signal(signal.SIGTERM, lambda *_: collector.stop_event.set())
     try:
         return collector.run()
     finally:
-        if args.output:
-            stream.close()
+        stream.close()
         if event_writer is not None:
             event_writer.close()
 

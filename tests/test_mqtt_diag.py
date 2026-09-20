@@ -4,10 +4,27 @@ import json
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from meshtastic.protobuf import mesh_pb2, mqtt_pb2, portnums_pb2
 
-from atlas_muxdiag.mqtt_diag import DEFAULT_PSK, _expand_psk, analyze_message, analyze_payload
+from atlas_muxdiag.mqtt_diag import (
+    DEFAULT_PSK,
+    _expand_psk,
+    analyze_message,
+    analyze_payload,
+    parser,
+)
 
 TEST_KEY = bytes.fromhex("00112233445566778899aabbccddeeff")
 KEYS = {1: ("test-channel", TEST_KEY)}
+
+
+def test_collector_defaults_to_continuous_bounded_operation(tmp_path) -> None:
+    args = parser().parse_args(["--keys-file", str(tmp_path / "keys.json")])
+
+    assert args.duration == 0
+    assert args.max_messages == 0
+    assert args.output_max_bytes == 100 * 1024 * 1024
+    assert args.output_backups == 3
+    assert args.spool_max_events == 50_000
+    assert args.spool_max_bytes == 256 * 1024 * 1024
 
 
 def _envelope(
