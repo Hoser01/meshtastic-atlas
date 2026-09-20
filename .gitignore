@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+captures/
+data/
+server/data/
+build/
+*.ndjson
+*.stream.bin
+
+# Operational/infrastructure material remains local until publication is approved.
+deploy/
+docs/
+README.md
+server/README.md
+web/README.md

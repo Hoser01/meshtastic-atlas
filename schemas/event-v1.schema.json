@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://atlas.invalid/schemas/event-v1.schema.json",
+  "title": "ATLAS normalized event v1",
+  "type": "object",
+  "required": [
+    "schema_version", "event_id", "event", "observer_id",
+    "observer_node_num", "observer_node_id", "observed_at"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "event_id": {"type": "string", "minLength": 16, "maxLength": 128},
+    "event": {
+      "enum": [
+        "rf_observation", "network_packet", "local_transmission",
+        "local_transmission_queued", "local_transmission_response",
+        "unclassified_packet", "collector_started", "collector_stopped",
+        "observer_connected", "observer_connection_error"
+      ]
+    },
+    "observer_id": {"type": "string", "minLength": 1},
+    "observer_node_num": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "observer_node_id": {"type": "string", "pattern": "^![0-9a-fA-F]{8}$"},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "packet_id": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "from_node": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "to_node": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "source": {"enum": ["RF_OBSERVED", "MQTT_NETWORK", "LOCAL_TX", "UNKNOWN"]},
+    "rx_rssi": {"type": ["integer", "null"]},
+    "rx_snr": {"type": ["number", "null"]},
+    "position": {
+      "type": ["object", "null"],
+      "required": ["latitude", "longitude"],
+      "properties": {
+        "latitude": {"type": "number", "minimum": -90, "maximum": 90},
+        "longitude": {"type": "number", "minimum": -180, "maximum": 180},
+        "altitude": {"type": "integer"},
+        "timestamp": {"type": "integer", "minimum": 0},
+        "precision_bits": {"type": "integer", "minimum": 0},
+        "gps_accuracy": {"type": "integer", "minimum": 0},
+        "sats_in_view": {"type": "integer", "minimum": 0},
+        "fix_quality": {"type": "integer", "minimum": 0},
+        "fix_type": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

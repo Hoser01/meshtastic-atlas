@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atlas-muxdiag"
+version = "0.3.0"
+description = "Read-only Meshtastic RF observation collector and diagnostics for ATLAS"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+authors = [{name = "ATLAS contributors"}]
+dependencies = [
+  "meshtastic==2.7.11",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<10",
+  "ruff>=0.12,<1",
+]
+mqtt = [
+  "paho-mqtt==2.1.0",
+  "cryptography>=43,<48",
+]
+
+[project.scripts]
+atlas-muxdiag = "atlas_muxdiag.cli:main"
+atlas-collector = "atlas_muxdiag.collector_cli:main"
+atlas-audit-collector = "atlas_muxdiag.audit_collector:main"
+atlas-mqttdiag = "atlas_muxdiag.mqtt_diag:main"
+atlas-mqtt-replay = "atlas_muxdiag.mqtt_replay:main"
+atlas-replay = "atlas_muxdiag.replay_cli:main"
+atlas-observer = "atlas_muxdiag.observer_cli:main"
+atlas-observer-update = "atlas_muxdiag.updater:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "server/tests"]
+pythonpath = ["src", "server/src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = ["captures", ".venv"]

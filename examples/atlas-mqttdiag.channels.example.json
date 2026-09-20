@@ -1,0 +1,14 @@
+{
+  "0": {
+    "name": "Default Meshtastic",
+    "psk": "REPLACE_WITH_BASE64_PSK"
+  },
+  "1": {
+    "name": "LZMesh",
+    "psk": "REPLACE_WITH_BASE64_PSK"
+  },
+  "3": {
+    "name": "LZRF",
+    "psk": "REPLACE_WITH_BASE64_PSK"
+  }
+}
