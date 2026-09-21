@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlas-server"
-version = "0.3.9"
+version = "0.3.10"
 description = "Central ATLAS event ingestion and transmission correlation"
 requires-python = ">=3.10"
 license = "GPL-3.0-only"

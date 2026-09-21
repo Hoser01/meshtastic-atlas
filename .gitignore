@@ -12,6 +12,8 @@ dist/
 release/
 *.ndjson
 *.stream.bin
+.env.local
+.env.*.local
 
 # Operational/infrastructure material remains local until publication is approved.
 deploy/
