@@ -30,6 +30,18 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True, timeout=300)
 
 
+def relocate_virtualenv_scripts(staging: Path, destination: Path) -> None:
+    """Rewrite absolute virtualenv paths before atomically moving a release."""
+    old = os.fsencode(staging)
+    new = os.fsencode(destination)
+    for script in (staging / "bin").iterdir():
+        if not script.is_file() or script.is_symlink():
+            continue
+        content = script.read_bytes()
+        if old in content:
+            script.write_bytes(content.replace(old, new))
+
+
 def main() -> int:
     manifest_url = os.environ.get("ATLAS_UPDATE_MANIFEST_URL", DEFAULT_MANIFEST_URL).strip()
     if manifest_url.lower() == "disabled":
@@ -74,6 +86,7 @@ def main() -> int:
         venv.EnvBuilder(with_pip=True, clear=True).create(staging)
         run([str(staging / "bin/pip"), "install", "--no-input", str(artifact)])
         run([str(staging / "bin/atlas-observer"), "--check-config"])
+        relocate_virtualenv_scripts(staging, destination)
         os.replace(staging, destination)
     current = root / "current"
     previous_target = current.resolve() if current.is_symlink() else None
