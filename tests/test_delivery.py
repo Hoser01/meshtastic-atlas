@@ -58,3 +58,18 @@ def test_delivery_queue_discards_oldest_at_limit(tmp_path: Path, monkeypatch) ->
     rows = queue.database.execute("SELECT payload FROM outbox ORDER BY id").fetchall()
     assert [json.loads(row[0])["sequence"] for row in rows] == [2, 3]
     queue.close()
+
+
+def test_delivery_queue_identifies_atlas_to_edge_security(tmp_path: Path, monkeypatch) -> None:
+    requests = []
+
+    def capture(request, **_kwargs):
+        requests.append(request)
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", capture)
+    queue = DeliveryQueue(tmp_path / "queue.db", "https://atlas.test/events", "token")
+    queue.enqueue('{"event_id":"one"}')
+
+    assert requests[0].get_header("User-agent").startswith("ATLAS-Observer/")
+    queue.close()

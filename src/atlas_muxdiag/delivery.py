@@ -13,6 +13,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from . import __version__
+
 LOG = logging.getLogger("atlas_delivery")
 
 
@@ -134,6 +136,7 @@ class DeliveryQueue:
                     headers={
                         "Content-Type": "application/json",
                         "X-Atlas-Ingest-Token": self.api_token,
+                        "User-Agent": f"ATLAS-Observer/{__version__}",
                     },
                     method="POST",
                 )
