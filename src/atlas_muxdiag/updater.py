@@ -13,6 +13,7 @@ import tempfile
 import urllib.request
 import venv
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import __version__
 
@@ -24,6 +25,13 @@ DEFAULT_MANIFEST_URL = (
 
 def version_key(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.split(r"[-+]", value, maxsplit=1)[0].split("."))
+
+
+def wheel_name(artifact_url: str) -> str:
+    name = Path(urlparse(artifact_url).path).name
+    if not name.endswith(".whl"):
+        raise ValueError("update artifact must be a wheel")
+    return name
 
 
 def run(command: list[str]) -> None:
@@ -61,6 +69,10 @@ def main() -> int:
         raise SystemExit("invalid update manifest")
     if not re.fullmatch(r"[0-9a-f]{64}", expected):
         raise SystemExit("update manifest is missing a valid SHA-256 digest")
+    try:
+        artifact_name = wheel_name(artifact_url)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if version_key(version) <= version_key(__version__):
         print(f"ATLAS observer {__version__} is current; feed offers {version}")
         return 0
@@ -70,7 +82,7 @@ def main() -> int:
     if destination.exists():
         raise SystemExit(f"release already exists but is not active: {destination}")
     with tempfile.TemporaryDirectory(prefix="atlas-update-") as temporary:
-        artifact = Path(temporary) / "atlas-observer.whl"
+        artifact = Path(temporary) / artifact_name
         digest = hashlib.sha256()
         with (
             urllib.request.urlopen(artifact_url, timeout=30) as response,

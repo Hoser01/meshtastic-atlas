@@ -1,10 +1,20 @@
-from atlas_muxdiag.updater import DEFAULT_MANIFEST_URL, relocate_virtualenv_scripts, version_key
+from atlas_muxdiag.updater import (
+    DEFAULT_MANIFEST_URL,
+    relocate_virtualenv_scripts,
+    version_key,
+    wheel_name,
+)
 
 
 def test_release_feed_is_https_and_version_order_is_numeric() -> None:
     assert DEFAULT_MANIFEST_URL.startswith("https://github.com/Hoser01/meshtastic-atlas/")
     assert version_key("0.3.10") > version_key("0.3.9")
     assert version_key("1.0.0-beta.1") == (1, 0, 0)
+
+
+def test_wheel_name_preserves_package_version_tags() -> None:
+    url = "https://example.test/releases/v0.3.8/atlas_muxdiag-0.3.8-py3-none-any.whl"
+    assert wheel_name(url) == "atlas_muxdiag-0.3.8-py3-none-any.whl"
 
 
 def test_relocate_virtualenv_scripts_rewrites_staging_prefix(tmp_path) -> None:
