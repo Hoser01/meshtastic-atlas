@@ -419,18 +419,26 @@ export default function Home() {
 
   useEffect(() => {
     const base = (process.env.NEXT_PUBLIC_ATLAS_API_URL || window.location.origin).replace(/\/$/, "");
+    let closed = false;
+    let refreshing = false;
+    let refreshPending = false;
+    let refreshTimer: number | undefined;
     const refresh = async () => {
+      if (refreshing) {
+        refreshPending = true;
+        return;
+      }
+      refreshing = true;
       try {
-        const [healthResponse, nodeResponse, summaryResponse, activityResponse, observerResponse, positionsResponse, coverageResponse] = await Promise.all([
+        const [healthResponse, nodeResponse, summaryResponse, activityResponse, observerResponse] = await Promise.all([
           fetch(`${base}/api/v1/health`),
           fetch(`${base}/api/v1/nodes?limit=500`),
-          fetch(`${base}/api/v1/node-summaries?limit=5000`),
-          fetch(`${base}/api/v1/activity?limit=1000`),
+          fetch(`${base}/api/v1/node-summaries?limit=1000`),
+          fetch(`${base}/api/v1/activity?limit=500`),
           fetch(`${base}/api/v1/observers`),
-          fetch(`${base}/api/v1/positions?limit=2000`),
-          fetch(`${base}/api/v1/coverage/measurements?limit=10000&include_neighbors=true`),
         ]);
-        if (!healthResponse.ok || !nodeResponse.ok || !summaryResponse.ok || !activityResponse.ok || !observerResponse.ok || !positionsResponse.ok || !coverageResponse.ok) throw new Error("ATLAS API unavailable");
+        if (!healthResponse.ok || !nodeResponse.ok || !summaryResponse.ok || !activityResponse.ok || !observerResponse.ok) throw new Error("ATLAS API unavailable");
+        if (closed) return;
         setApiHealthy(true);
         setHealth(await healthResponse.json());
         const positionedNodes = ((await nodeResponse.json()) as ApiNode[]).map(toMeshNode);
@@ -438,8 +446,6 @@ export default function Home() {
         setNodeSummaries(summaries);
         setActivity((await activityResponse.json()) as ActivityEvent[]);
         setObservers((await observerResponse.json()) as ApiObserver[]);
-        setPositionHistory((await positionsResponse.json()) as ApiNode[]);
-        setCoverageMeasurements((await coverageResponse.json()) as CoverageMeasurement[]);
         setLiveNodes(positionedNodes);
         setSelected((current) => current
           ? positionedNodes.find((node) => node.id === current.id) ?? current
@@ -450,17 +456,55 @@ export default function Home() {
           return refreshed ? { ...current, ...refreshed } : current;
         });
       } catch {
-        setApiHealthy(false);
+        if (!closed) setApiHealthy(false);
+      } finally {
+        refreshing = false;
+        if (refreshPending && !closed) {
+          refreshPending = false;
+          refreshTimer = window.setTimeout(() => {
+            refreshTimer = undefined;
+            void refresh();
+          }, 5_000);
+        }
+      }
+    };
+    const scheduleRefresh = () => {
+      refreshPending = true;
+      if (refreshing || refreshTimer !== undefined) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = undefined;
+        refreshPending = false;
+        void refresh();
+      }, 5_000);
+    };
+    const loadHistorical = async () => {
+      try {
+        const [positionsResponse, coverageResponse] = await Promise.all([
+          fetch(`${base}/api/v1/positions?limit=2000`),
+          fetch(`${base}/api/v1/coverage/measurements?limit=10000&include_neighbors=true`),
+        ]);
+        if (!positionsResponse.ok || !coverageResponse.ok || closed) return;
+        setPositionHistory((await positionsResponse.json()) as ApiNode[]);
+        setCoverageMeasurements((await coverageResponse.json()) as CoverageMeasurement[]);
+      } catch {
+        // Historical layers are optional; keep the live map available.
       }
     };
     void refresh();
+    void loadHistorical();
+    const historicalTimer = window.setInterval(() => void loadHistorical(), 60_000);
     const stream = new EventSource(`${base}/api/v1/live`);
-    stream.onmessage = () => void refresh();
+    stream.onmessage = scheduleRefresh;
     ["rf_observation", "network_packet", "local_transmission", "unclassified_packet",
       "observer_connected", "observer_connection_error"].forEach((eventName) =>
-      stream.addEventListener(eventName, () => void refresh()),
+      stream.addEventListener(eventName, scheduleRefresh),
     );
-    return () => stream.close();
+    return () => {
+      closed = true;
+      stream.close();
+      window.clearInterval(historicalTimer);
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+    };
   }, []);
 
   useEffect(() => {
