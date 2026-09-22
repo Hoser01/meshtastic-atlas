@@ -1206,8 +1206,14 @@ class AtlasStore:
         gateways = {event.get("observer_id") for event in group if event.get("observer_id")}
         rf_observations = sum(event.get("source") == "RF_OBSERVED" for event in group)
         mqtt_observations = sum(event.get("source") == "MQTT_NETWORK" for event in group)
-        destinations = {event.get("to_node") for event in group}
-        portnums = {event.get("portnum") or "UNKNOWN" for event in group}
+        destinations = {event.get("to_node") for event in group if event.get("to_node") is not None}
+        portnums = {event.get("portnum") for event in group if event.get("portnum")}
+        resolved_destination = preferred.get("to_node")
+        if resolved_destination is None:
+            resolved_destination = next((value for value in destinations), None)
+        resolved_portnum = preferred.get("portnum") or next(
+            (event.get("portnum") for event in ordered if event.get("portnum")), "UNKNOWN"
+        )
         decodable = sum(
             event.get("transport_source") == "LZ_MQTT" and not bool(event.get("encrypted"))
             for event in group
@@ -1219,8 +1225,8 @@ class AtlasStore:
         return {
             "sender": preferred["from_node"],
             "packet_id": preferred["packet_id"],
-            "to_node": preferred.get("to_node"),
-            "portnum": preferred.get("portnum") or "UNKNOWN",
+            "to_node": resolved_destination,
+            "portnum": resolved_portnum,
             "first_observed_at": ordered[0]["observed_at"],
             "last_observed_at": ordered[-1]["observed_at"],
             "provenance": "RF_OBSERVED"

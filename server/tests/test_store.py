@@ -229,3 +229,28 @@ def test_node_summaries_are_unique_ordered_and_include_received_activity(tmp_pat
         assert quality["deduplication_rule"].endswith("RF_OBSERVED wins provenance")
     finally:
         store.close()
+
+
+def test_unknown_packet_metadata_does_not_conflict_with_decoded_value() -> None:
+    base = {
+        "from_node": 100,
+        "packet_id": 42,
+        "to_node": 0xFFFFFFFF,
+        "observed_at": "2026-09-18T13:00:00Z",
+        "observer_id": "LZG2",
+        "source": "RF_OBSERVED",
+    }
+    summary = AtlasStore._logical_packet_summary(
+        [
+            {**base, "portnum": None},
+            {
+                **base,
+                "observed_at": "2026-09-18T13:00:01Z",
+                "observer_id": "MQTT:!a2e9f268",
+                "source": "MQTT_NETWORK",
+                "portnum": "NODEINFO_APP",
+            },
+        ]
+    )
+    assert summary["portnum"] == "NODEINFO_APP"
+    assert summary["conflicting_portnum"] is False
