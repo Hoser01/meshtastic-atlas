@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +43,14 @@ CREATE INDEX IF NOT EXISTS observations_transmission_idx
 ON observations(transmission_id, observed_at);
 CREATE INDEX IF NOT EXISTS observations_observer_idx
 ON observations(observer_id, observed_at);
+CREATE INDEX IF NOT EXISTS observations_time_idx
+ON observations(observed_at DESC);
+CREATE INDEX IF NOT EXISTS observations_from_time_idx
+ON observations(json_extract(raw_event, '$.from_node'), observed_at DESC);
+CREATE INDEX IF NOT EXISTS observations_to_time_idx
+ON observations(json_extract(raw_event, '$.to_node'), observed_at DESC);
+CREATE INDEX IF NOT EXISTS observations_packet_idx
+ON observations(json_extract(raw_event, '$.from_node'), json_extract(raw_event, '$.packet_id'));
 
 CREATE TABLE IF NOT EXISTS events (
     event_id TEXT PRIMARY KEY,
@@ -51,6 +59,14 @@ CREATE TABLE IF NOT EXISTS events (
     observed_at TEXT NOT NULL,
     raw_event TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS events_time_idx
+ON events(observed_at DESC);
+CREATE INDEX IF NOT EXISTS events_from_time_idx
+ON events(json_extract(raw_event, '$.from_node'), observed_at DESC);
+CREATE INDEX IF NOT EXISTS events_to_time_idx
+ON events(json_extract(raw_event, '$.to_node'), observed_at DESC);
+CREATE INDEX IF NOT EXISTS events_packet_idx
+ON events(json_extract(raw_event, '$.from_node'), json_extract(raw_event, '$.packet_id'));
 
 CREATE TABLE IF NOT EXISTS positions (
     event_id TEXT PRIMARY KEY,
@@ -681,6 +697,47 @@ class AtlasStore:
             )
             return [json.loads(row["raw_event"]) for row in rows]
 
+    def activity_timeline(self, minutes: int = 15) -> dict[str, Any]:
+        """Return complete minute bins without sending every event to the browser."""
+        end = datetime.now(timezone.utc)
+        minute_start = end.replace(second=0, microsecond=0) - timedelta(minutes=minutes - 1)
+        start = minute_start
+        cutoff = start.isoformat().replace("+00:00", "Z")
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT minute, source, count(*) AS event_count FROM (
+                    SELECT strftime('%Y-%m-%dT%H:%M:00Z', observed_at) AS minute,
+                           json_extract(raw_event, '$.source') AS source
+                    FROM events WHERE observed_at>=?
+                    UNION ALL
+                    SELECT strftime('%Y-%m-%dT%H:%M:00Z', observed_at) AS minute,
+                           source
+                    FROM observations WHERE observed_at>=?
+                ) GROUP BY minute, source
+                """,
+                (cutoff, cutoff),
+            ).fetchall()
+        bins = [
+            {"start": (minute_start + timedelta(minutes=index)).isoformat().replace("+00:00", "Z"),
+             "rf": 0, "mqtt": 0, "other": 0}
+            for index in range(minutes)
+        ]
+        for row in rows:
+            if not row["minute"]:
+                continue
+            timestamp = datetime.fromisoformat(row["minute"].replace("Z", "+00:00"))
+            index = int((timestamp - minute_start).total_seconds() // 60)
+            if not 0 <= index < minutes:
+                continue
+            key = "rf" if row["source"] == "RF_OBSERVED" else "mqtt" if row["source"] == "MQTT_NETWORK" else "other"
+            bins[index][key] += int(row["event_count"])
+        return {
+            "start": start.isoformat().replace("+00:00", "Z"),
+            "end": end.isoformat().replace("+00:00", "Z"),
+            "bins": bins,
+        }
+
     def list_transmissions(
         self, limit: int = 100, before: str | None = None
     ) -> list[dict[str, Any]]:
@@ -1060,7 +1117,8 @@ class AtlasStore:
                        json_extract(raw_event, '$.encrypted'),
                        observer_id, observed_at
                 FROM events
-                WHERE json_extract(raw_event, '$.packet_id') IS NOT NULL
+                WHERE event_type='network_packet'
+                  AND json_extract(raw_event, '$.packet_id') IS NOT NULL
                   AND json_extract(raw_event, '$.from_node') IS NOT NULL
                 """
             ).fetchall()
@@ -1131,7 +1189,8 @@ class AtlasStore:
               AND json_extract(raw_event, '$.from_node') IS NOT NULL {conditions}
             UNION ALL
             SELECT raw_event FROM events
-            WHERE json_extract(raw_event, '$.packet_id') IS NOT NULL
+            WHERE event_type='network_packet'
+              AND json_extract(raw_event, '$.packet_id') IS NOT NULL
               AND json_extract(raw_event, '$.from_node') IS NOT NULL {conditions}
             """,
             params + params,
@@ -1192,11 +1251,20 @@ class AtlasStore:
 
     def get_logical_packet(self, sender: int, packet_id: int) -> dict[str, Any] | None:
         with self.lock:
-            events = [
-                event
-                for event in self._quality_packet_events()
-                if event.get("from_node") == sender and event.get("packet_id") == packet_id
-            ]
+            rows = self.connection.execute(
+                """
+                SELECT raw_event FROM observations
+                WHERE json_extract(raw_event, '$.from_node')=?
+                  AND json_extract(raw_event, '$.packet_id')=?
+                UNION ALL
+                SELECT raw_event FROM events
+                WHERE event_type='network_packet'
+                  AND json_extract(raw_event, '$.from_node')=?
+                  AND json_extract(raw_event, '$.packet_id')=?
+                """,
+                (sender, packet_id, sender, packet_id),
+            )
+            events = [json.loads(row["raw_event"]) for row in rows]
         if not events:
             return None
         summary = self._logical_packet_summary(events)

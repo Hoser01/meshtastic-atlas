@@ -59,6 +59,9 @@ def test_read_api_and_authenticated_ingestion(tmp_path) -> None:
         assert health["multi_observer_field_validated"] is False
         assert client.get("/api/v1/observers").json()[0]["observer_id"] == "LZG2"
         assert client.get("/api/v1/activity").json()[0]["event_id"] == "a" * 32
+        timeline = client.get("/api/v1/activity/timeline?minutes=15").json()
+        assert len(timeline["bins"]) == 15
+        assert timeline["start"] < timeline["end"]
         health = client.get("/api/v1/health").json()
         assert health["rf_observations"] == 1
         assert health["positioned_nodes"] == 1

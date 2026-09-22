@@ -123,6 +123,12 @@ type ActivityEvent = {
   };
 };
 
+type TimelineData = {
+  start: string;
+  end: string;
+  bins: Array<{ start: string; rf: number; mqtt: number; other: number }>;
+};
+
 type NodeSummary = {
   node_num: number;
   node_id: string | null;
@@ -299,6 +305,7 @@ export default function Home() {
   const [coverageMeasurements, setCoverageMeasurements] = useState<CoverageMeasurement[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
+  const [timelineData, setTimelineData] = useState<TimelineData | null>(null);
   const [observers, setObservers] = useState<ApiObserver[]>([]);
   const [nodeSummaries, setNodeSummaries] = useState<NodeSummary[]>([]);
   const [quality, setQuality] = useState<QualityMetrics | null>(null);
@@ -376,6 +383,12 @@ export default function Home() {
   }, [nodeSummaries, searchQuery, showMqtt, showRemoteRf, showRf]);
 
   const timeline = useMemo(() => {
+    if (timelineData) {
+      const bins = timelineData.bins.map((bin) => ({ ...bin, start: new Date(bin.start).getTime() }));
+      const peak = Math.max(1, ...bins.map((bin) => bin.rf + bin.mqtt + bin.other));
+      const format = (timestamp: string) => new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      return { bins, peak, start: new Date(timelineData.start).getTime(), end: new Date(timelineData.end).getTime(), startLabel: format(timelineData.start), endLabel: format(timelineData.end) };
+    }
     const end = Date.now();
     const start = end - 15 * 60_000;
     const bins = Array.from({ length: 15 }, (_, index) => ({ rf: 0, mqtt: 0, other: 0, start: start + index * 60_000 }));
@@ -390,7 +403,7 @@ export default function Home() {
     const peak = Math.max(1, ...bins.map((bin) => bin.rf + bin.mqtt + bin.other));
     const format = (timestamp: number) => new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     return { bins, peak, start, end, startLabel: format(start), endLabel: format(end) };
-  }, [activity]);
+  }, [activity, timelineData]);
 
   const selectedTimelineEvents = useMemo(() => {
     if (selectedTimelineBin === null) return activity;
@@ -430,14 +443,15 @@ export default function Home() {
       }
       refreshing = true;
       try {
-        const [healthResponse, nodeResponse, summaryResponse, activityResponse, observerResponse] = await Promise.all([
+        const [healthResponse, nodeResponse, summaryResponse, activityResponse, observerResponse, timelineResponse] = await Promise.all([
           fetch(`${base}/api/v1/health`),
           fetch(`${base}/api/v1/nodes?limit=500`),
           fetch(`${base}/api/v1/node-summaries?limit=1000`),
-          fetch(`${base}/api/v1/activity?limit=500`),
+          fetch(`${base}/api/v1/activity?limit=250`),
           fetch(`${base}/api/v1/observers`),
+          fetch(`${base}/api/v1/activity/timeline?minutes=15`),
         ]);
-        if (!healthResponse.ok || !nodeResponse.ok || !summaryResponse.ok || !activityResponse.ok || !observerResponse.ok) throw new Error("ATLAS API unavailable");
+        if (!healthResponse.ok || !nodeResponse.ok || !summaryResponse.ok || !activityResponse.ok || !observerResponse.ok || !timelineResponse.ok) throw new Error("ATLAS API unavailable");
         if (closed) return;
         setApiHealthy(true);
         setHealth(await healthResponse.json());
@@ -446,6 +460,7 @@ export default function Home() {
         setNodeSummaries(summaries);
         setActivity((await activityResponse.json()) as ActivityEvent[]);
         setObservers((await observerResponse.json()) as ApiObserver[]);
+        setTimelineData((await timelineResponse.json()) as TimelineData);
         setLiveNodes(positionedNodes);
         setSelected((current) => current
           ? positionedNodes.find((node) => node.id === current.id) ?? current
@@ -477,22 +492,7 @@ export default function Home() {
         void refresh();
       }, 5_000);
     };
-    const loadHistorical = async () => {
-      try {
-        const [positionsResponse, coverageResponse] = await Promise.all([
-          fetch(`${base}/api/v1/positions?limit=2000`),
-          fetch(`${base}/api/v1/coverage/measurements?limit=10000&include_neighbors=true`),
-        ]);
-        if (!positionsResponse.ok || !coverageResponse.ok || closed) return;
-        setPositionHistory((await positionsResponse.json()) as ApiNode[]);
-        setCoverageMeasurements((await coverageResponse.json()) as CoverageMeasurement[]);
-      } catch {
-        // Historical layers are optional; keep the live map available.
-      }
-    };
     void refresh();
-    void loadHistorical();
-    const historicalTimer = window.setInterval(() => void loadHistorical(), 60_000);
     const stream = new EventSource(`${base}/api/v1/live`);
     stream.onmessage = scheduleRefresh;
     ["rf_observation", "network_packet", "local_transmission", "unclassified_packet",
@@ -502,10 +502,36 @@ export default function Home() {
     return () => {
       closed = true;
       stream.close();
-      window.clearInterval(historicalTimer);
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
     };
   }, []);
+
+  useEffect(() => {
+    if (!showHeatmap && !showCoverage && !showReachability) return;
+    const base = (process.env.NEXT_PUBLIC_ATLAS_API_URL || window.location.origin).replace(/\/$/, "");
+    const controller = new AbortController();
+    const loadHistorical = async () => {
+      try {
+        const requests: Array<Promise<void>> = [];
+        if (showHeatmap) requests.push(
+          fetch(`${base}/api/v1/positions?limit=2000`, { signal: controller.signal })
+            .then((response) => response.ok ? response.json() as Promise<ApiNode[]> : Promise.reject())
+            .then(setPositionHistory),
+        );
+        if (showCoverage || showReachability) requests.push(
+          fetch(`${base}/api/v1/coverage/measurements?limit=10000&include_neighbors=true`, { signal: controller.signal })
+            .then((response) => response.ok ? response.json() as Promise<CoverageMeasurement[]> : Promise.reject())
+            .then(setCoverageMeasurements),
+        );
+        await Promise.all(requests);
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === "AbortError")) return;
+      }
+    };
+    void loadHistorical();
+    const timer = window.setInterval(() => void loadHistorical(), 60_000);
+    return () => { window.clearInterval(timer); controller.abort(); };
+  }, [showCoverage, showHeatmap, showReachability]);
 
   useEffect(() => {
     if (!qualityView) return;

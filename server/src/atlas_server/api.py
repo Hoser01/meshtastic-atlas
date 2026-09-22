@@ -70,7 +70,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.14", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.15", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -154,6 +154,10 @@ def create_app(
         before: str | None = None,
     ) -> list[dict[str, Any]]:
         return store.list_positions(limit, node_num, before)
+
+    @app.get("/api/v1/activity/timeline")
+    def activity_timeline(minutes: int = Query(15, ge=5, le=120)) -> dict[str, Any]:
+        return store.activity_timeline(minutes)
 
     @app.get("/api/v1/nodes")
     def nodes(limit: int = Query(500, ge=1, le=5000)) -> list[dict[str, Any]]:
