@@ -41,7 +41,14 @@ def test_read_api_and_authenticated_ingestion(tmp_path) -> None:
         assert client.post("/api/v1/events", json=observation()).status_code == 401
         response = client.post(
             "/api/v1/events",
-            json=observation(),
+            json={
+                **observation(),
+                "telemetry": {
+                    "time": 1_789_000_000,
+                    "variant": "device_metrics",
+                    "metrics": {"battery_level": 82, "voltage": 4.08},
+                },
+            },
             headers={"X-Atlas-Ingest-Token": "secret"},
         )
         assert response.status_code == 202
@@ -81,6 +88,11 @@ def test_read_api_and_authenticated_ingestion(tmp_path) -> None:
         assert compatibility["name"] is None
         assert compatibility["lat"] == 30.213
         assert compatibility["src_rf"] is True
+        assert compatibility["telemetry"]["battery"] == 82
+        assert compatibility["telemetry"]["voltage"] == 4.08
+        telemetry = client.get("/api/v1/telemetry?node_num=100").json()
+        assert telemetry[0]["variant"] == "device_metrics"
+        assert telemetry[0]["metrics"]["battery_level"] == 82
         node_detail = client.get("/api/v1/nodes/100").json()
         assert node_detail["last_source"] == "RF_OBSERVED"
         assert node_detail["last_rf_seen"] == "2026-09-18T13:00:00Z"

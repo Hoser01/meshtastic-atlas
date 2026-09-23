@@ -1,4 +1,4 @@
-from meshtastic.protobuf import admin_pb2, mesh_pb2, portnums_pb2
+from meshtastic.protobuf import admin_pb2, mesh_pb2, portnums_pb2, telemetry_pb2
 
 from atlas_muxdiag.decode import ProtobufDecoder, classify_packet
 
@@ -82,6 +82,24 @@ def test_zero_position_is_not_presented_as_location() -> None:
     message.packet.decoded.payload = mesh_pb2.Position().SerializeToString()
     summary = ProtobufDecoder().decode(message.SerializeToString())["packet_summary"]
     assert "position" not in summary
+
+
+def test_decode_device_telemetry() -> None:
+    message = mesh_pb2.FromRadio()
+    message.packet.CopyFrom(packet(0xA0352614))
+    message.packet.decoded.portnum = portnums_pb2.PortNum.TELEMETRY_APP
+    telemetry = telemetry_pb2.Telemetry(time=1_789_000_000)
+    telemetry.device_metrics.battery_level = 82
+    telemetry.device_metrics.voltage = 4.08
+    telemetry.device_metrics.channel_utilization = 3.5
+    message.packet.decoded.payload = telemetry.SerializeToString()
+
+    decoded = ProtobufDecoder().decode(message.SerializeToString())["packet_summary"]["telemetry"]
+
+    assert decoded["variant"] == "device_metrics"
+    assert decoded["time"] == 1_789_000_000
+    assert decoded["metrics"]["battery_level"] == 82
+    assert decoded["metrics"]["voltage"] == 4.08
 
 
 def test_decode_node_info_names() -> None:

@@ -79,6 +79,7 @@ class MqttEventNormalizer:
             "device_metadata": summary.get("device_metadata"),
             "neighbor_info": summary.get("neighbor_info"),
             "traceroute": summary.get("traceroute"),
+            "telemetry": summary.get("telemetry"),
         }
         return [event]
 

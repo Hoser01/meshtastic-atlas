@@ -69,6 +69,35 @@ def test_non_observation_event_is_stored_idempotently(tmp_path) -> None:
         store.close()
 
 
+def test_telemetry_history_and_latest_are_retained(tmp_path) -> None:
+    store = AtlasStore(tmp_path / "atlas.db")
+    try:
+        first = observation("1" * 32, "A", "2026-09-18T13:00:00Z", -80)
+        first["portnum"] = "TELEMETRY_APP"
+        first["telemetry"] = {
+            "time": 1_789_000_000,
+            "variant": "device_metrics",
+            "metrics": {"battery_level": 82, "voltage": 4.08},
+        }
+        latest = observation("2" * 32, "A", "2026-09-18T13:05:00Z", -79)
+        latest["packet_id"] = 43
+        latest["portnum"] = "TELEMETRY_APP"
+        latest["telemetry"] = {
+            "time": 1_789_000_300,
+            "variant": "environment_metrics",
+            "metrics": {"temperature": 24.5, "relative_humidity": 61.2},
+        }
+        assert store.ingest(first)
+        assert store.ingest(latest)
+        history = store.list_telemetry(node_num=100)
+        assert len(history) == 2
+        assert history[0]["metrics"]["temperature"] == 24.5
+        current = store.latest_telemetry_by_node()[100]
+        assert current["variant"] == "environment_metrics"
+    finally:
+        store.close()
+
+
 def test_observer_health_counts_only_connection_errors_from_last_24_hours(tmp_path) -> None:
     store = AtlasStore(tmp_path / "atlas.db")
     now = datetime.now(timezone.utc)

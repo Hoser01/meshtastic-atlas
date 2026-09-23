@@ -320,7 +320,9 @@ def main() -> int:
         or args.spool_max_bytes <= 0
         or args.api_timeout <= 0
     ):
-        parser().error("duration and max-messages must be nonnegative; storage limits must be positive")
+        parser().error(
+            "duration and max-messages must be nonnegative; storage limits must be positive"
+        )
     if not args.username or not args.password:
         parser().error("set ATLAS_MQTT_USERNAME and ATLAS_MQTT_PASSWORD")
     keys = load_channel_keys(args.keys_file)

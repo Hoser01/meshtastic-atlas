@@ -92,6 +92,23 @@ ON positions(node_num, observed_at DESC);
 CREATE INDEX IF NOT EXISTS positions_time_idx
 ON positions(observed_at DESC);
 
+CREATE TABLE IF NOT EXISTS telemetry (
+    event_id TEXT PRIMARY KEY,
+    node_num INTEGER NOT NULL,
+    observer_id TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    telemetry_time INTEGER,
+    variant TEXT NOT NULL,
+    metrics TEXT NOT NULL,
+    rx_rssi INTEGER,
+    rx_snr REAL
+);
+CREATE INDEX IF NOT EXISTS telemetry_node_time_idx
+ON telemetry(node_num, observed_at DESC);
+CREATE INDEX IF NOT EXISTS telemetry_time_idx
+ON telemetry(observed_at DESC);
+
 CREATE TABLE IF NOT EXISTS node_metadata (
     node_num INTEGER PRIMARY KEY,
     node_id TEXT,
@@ -345,6 +362,7 @@ class AtlasStore:
             )
             if cursor.rowcount == 1:
                 self._ingest_position(event)
+                self._ingest_telemetry(event)
                 self._ingest_node_info(event)
                 self._ingest_lifecycle(event)
                 self._ingest_neighbor_info(event)
@@ -458,6 +476,7 @@ class AtlasStore:
             ),
         )
         self._ingest_position(event)
+        self._ingest_telemetry(event)
         self._ingest_node_info(event)
         self._ingest_rf_measurement(event)
         self._ingest_neighbor_info(event)
@@ -669,6 +688,74 @@ class AtlasStore:
             ),
         )
 
+    def _ingest_telemetry(self, event: dict[str, Any]) -> None:
+        telemetry = event.get("telemetry")
+        node_num = event.get("from_node")
+        if not isinstance(telemetry, dict) or not isinstance(node_num, int):
+            return
+        variant = telemetry.get("variant")
+        metrics = telemetry.get("metrics")
+        if not isinstance(variant, str) or not isinstance(metrics, dict):
+            raise EventValidationError("telemetry requires a variant and metrics object")
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO telemetry
+                (event_id, node_num, observer_id, observed_at, source, telemetry_time,
+                 variant, metrics, rx_rssi, rx_snr)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event["event_id"],
+                node_num,
+                event["observer_id"],
+                event["observed_at"],
+                event.get("source", "UNKNOWN"),
+                telemetry.get("time"),
+                variant,
+                json.dumps(metrics, separators=(",", ":"), sort_keys=True),
+                event.get("rx_rssi"),
+                event.get("rx_snr"),
+            ),
+        )
+        self.connection.execute(
+            """
+            DELETE FROM telemetry WHERE node_num=? AND event_id NOT IN (
+                SELECT event_id FROM telemetry WHERE node_num=?
+                ORDER BY observed_at DESC LIMIT 10000
+            )
+            """,
+            (node_num, node_num),
+        )
+
+    def list_telemetry(self, limit: int = 500, node_num: int | None = None) -> list[dict[str, Any]]:
+        with self.lock:
+            where = " WHERE node_num=?" if node_num is not None else ""
+            params: tuple[Any, ...] = (node_num, limit) if node_num is not None else (limit,)
+            rows = self.connection.execute(
+                f"SELECT * FROM telemetry{where} ORDER BY observed_at DESC LIMIT ?", params
+            )
+            result = [dict(row) for row in rows]
+        for row in result:
+            row["metrics"] = json.loads(row["metrics"])
+        return result
+
+    def latest_telemetry_by_node(self) -> dict[int, dict[str, Any]]:
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT t.* FROM telemetry t
+                WHERE t.event_id=(
+                    SELECT latest.event_id FROM telemetry latest
+                    WHERE latest.node_num=t.node_num
+                    ORDER BY latest.observed_at DESC LIMIT 1
+                )
+                """
+            )
+            result = {int(row["node_num"]): dict(row) for row in rows}
+        for row in result.values():
+            row["metrics"] = json.loads(row["metrics"])
+        return result
+
     def _ingest_node_info(self, event: dict[str, Any]) -> None:
         node_info = event.get("node_info")
         device_metadata = event.get("device_metadata")
@@ -783,8 +870,14 @@ class AtlasStore:
                 (cutoff, cutoff),
             ).fetchall()
         bins = [
-            {"start": (minute_start + timedelta(minutes=index)).isoformat().replace("+00:00", "Z"),
-             "rf": 0, "mqtt": 0, "other": 0}
+            {
+                "start": (minute_start + timedelta(minutes=index))
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "rf": 0,
+                "mqtt": 0,
+                "other": 0,
+            }
             for index in range(minutes)
         ]
         for row in rows:
@@ -794,7 +887,13 @@ class AtlasStore:
             index = int((timestamp - minute_start).total_seconds() // 60)
             if not 0 <= index < minutes:
                 continue
-            key = "rf" if row["source"] == "RF_OBSERVED" else "mqtt" if row["source"] == "MQTT_NETWORK" else "other"
+            key = (
+                "rf"
+                if row["source"] == "RF_OBSERVED"
+                else "mqtt"
+                if row["source"] == "MQTT_NETWORK"
+                else "other"
+            )
             bins[index][key] += int(row["event_count"])
         return {
             "start": start.isoformat().replace("+00:00", "Z"),

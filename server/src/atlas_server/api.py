@@ -72,7 +72,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.22", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.23", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -213,6 +213,7 @@ def create_app(
         """Compatibility feed for the legacy LZMesh map without replacing old feeders."""
         now = datetime.now(timezone.utc)
         result: dict[str, dict[str, Any]] = {}
+        latest_telemetry = store.latest_telemetry_by_node()
         for raw_row in cached_node_summaries(10000):
             row = apply_configured_observer_position(raw_row)
             activity_at = row.get("last_packet_seen") or row.get("last_heard")
@@ -221,6 +222,23 @@ def create_app(
                 parsed = datetime.fromisoformat(str(activity_at).replace("Z", "+00:00"))
                 age_minutes = max(0, int((now - parsed).total_seconds() // 60))
             node_num = int(row["node_num"])
+            telemetry = latest_telemetry.get(node_num)
+            legacy_telemetry = None
+            if telemetry:
+                metrics = telemetry["metrics"]
+                legacy_telemetry = {
+                    "ts": telemetry["observed_at"],
+                    "variant": telemetry["variant"],
+                    "battery": metrics.get("battery_level"),
+                    "voltage": metrics.get("voltage"),
+                    "ch_util": metrics.get("channel_utilization"),
+                    "temp_c": metrics.get("temperature"),
+                    "rh": metrics.get("relative_humidity"),
+                    "pressure_hpa": metrics.get("barometric_pressure"),
+                    "gas_kohm": metrics.get("gas_resistance"),
+                    "metrics": metrics,
+                    "source": telemetry["source"],
+                }
             result[str(node_num)] = {
                 "id": f"0x{node_num & 0xFFFFFFFF:x}",
                 "node_num": node_num,
@@ -241,8 +259,15 @@ def create_app(
                 "src_mqtt": bool(row.get("mqtt_observations")),
                 "observer_id": row.get("latest_rf_observer_id"),
                 "rf_observed_at": row.get("latest_rf_observed_at"),
+                "telemetry": legacy_telemetry,
             }
         return result
+
+    @app.get("/api/v1/telemetry")
+    def telemetry(
+        limit: int = Query(500, ge=1, le=5000), node_num: int | None = None
+    ) -> list[dict[str, Any]]:
+        return store.list_telemetry(limit, node_num)
 
     @app.get("/api/v1/quality")
     def quality() -> dict[str, Any]:

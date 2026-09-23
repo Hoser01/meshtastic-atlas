@@ -6,7 +6,7 @@ from typing import Any
 
 from google.protobuf.json_format import MessageToDict
 from google.protobuf.message import DecodeError
-from meshtastic.protobuf import admin_pb2, mesh_pb2, portnums_pb2
+from meshtastic.protobuf import admin_pb2, mesh_pb2, portnums_pb2, telemetry_pb2
 
 
 def _enum_name(wrapper: Any, value: int) -> str | None:
@@ -211,6 +211,25 @@ class ProtobufDecoder:
                             value / 4 if value != -128 else None for value in route.snr_back
                         ],
                     }
+            elif portnum == portnums_pb2.PortNum.TELEMETRY_APP and packet.decoded.payload:
+                telemetry = telemetry_pb2.Telemetry()
+                try:
+                    telemetry.ParseFromString(packet.decoded.payload)
+                except DecodeError as exc:
+                    summary["telemetry_decode_error"] = type(exc).__name__
+                else:
+                    variant = telemetry.WhichOneof("variant")
+                    if variant:
+                        metrics = getattr(telemetry, variant)
+                        summary["telemetry"] = {
+                            "time": int(telemetry.time),
+                            "variant": variant,
+                            "metrics": MessageToDict(
+                                metrics,
+                                preserving_proto_field_name=True,
+                                use_integers_for_enums=False,
+                            ),
+                        }
             elif portnum == portnums_pb2.PortNum.ADMIN_APP and packet.decoded.payload:
                 admin = admin_pb2.AdminMessage()
                 try:
