@@ -1505,7 +1505,7 @@ export default function Home() {
               <span><i className="legend-swatch green" /><b>Local transmission</b><small>Green · a connected observer reports that it originated or queued the transmission locally.</small></span>
             </div>
             <h3>MAP DOTS AND CLUSTERS</h3>
-            <div className="help-copy"><p>Individual nodes use their evidence color: orange for direct collector RF, yellow for Remote Gateway RF, and purple for MQTT. Cluster circles are orange for ordinary RF/MQTT groups and yellow when Remote Gateway RF is dominant. Older nodes become dimmer. Remote and MQTT-positioned traveling nodes leave the live map after 24 hours, but their history remains stored.</p></div>
+            <div className="help-copy"><p>Individual nodes use their evidence color: orange for direct collector RF, yellow for Remote Gateway RF, and purple for MQTT. Cluster circles are orange for ordinary RF/MQTT groups and yellow when Remote Gateway RF is dominant. ATLAS retains each node's latest valid identity and position until newer evidence replaces them, even when live-map age rules hide the node. Packet activity controls brightness; position age remains visible in node evidence.</p></div>
             <h3>LINES AND MOVING PACKETS</h3>
             <div className="help-legend">
               <span><i className="legend-line solid rf" /><b>Solid orange</b><small>Confirmed zero-hop RF reception from the transmitter to the observer.</small></span>

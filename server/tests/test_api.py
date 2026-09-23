@@ -97,6 +97,50 @@ def test_read_api_and_authenticated_ingestion(tmp_path) -> None:
         assert client.get("/api/v1/positions?node_num=100").json()[0]["longitude"] == -93.751
 
 
+def test_configured_observer_position_fills_missing_radio_position(tmp_path, monkeypatch) -> None:
+    node_num = 1536181987
+    monkeypatch.setenv(
+        "ATLAS_OBSERVER_CONFIG",
+        json.dumps(
+            {
+                "PZWX": {
+                    "observer_node_num": node_num,
+                    "latitude": 37.146371,
+                    "longitude": -93.035781,
+                }
+            }
+        ),
+    )
+    event = observation()
+    event.update(
+        {
+            "observer_id": "PZWX",
+            "observer_node_num": node_num,
+            "observer_node_id": "!5b9046e3",
+            "from_node": node_num,
+            "portnum": "TELEMETRY_APP",
+        }
+    )
+    event.pop("position")
+    app = create_app(tmp_path / "atlas.db", ingest_token="secret")
+    with TestClient(app) as client:
+        assert (
+            client.post(
+                "/api/v1/events",
+                json=event,
+                headers={"X-Atlas-Ingest-Token": "secret"},
+            ).status_code
+            == 202
+        )
+        summary = client.get("/api/v1/node-summaries").json()[0]
+        detail = client.get(f"/api/v1/nodes/{node_num}").json()
+        for row in (summary, detail):
+            assert row["latitude"] == 37.146371
+            assert row["longitude"] == -93.035781
+            assert row["positioned"] == 1
+            assert row["position_source"] == "CONFIGURED_OBSERVER"
+
+
 def test_ingestion_disabled_without_token(tmp_path) -> None:
     with TestClient(create_app(tmp_path / "atlas.db")) as client:
         assert client.post("/api/v1/events", json=observation()).status_code == 503

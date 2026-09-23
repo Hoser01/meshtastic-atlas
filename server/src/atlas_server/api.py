@@ -70,7 +70,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.18", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.19", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -80,6 +80,32 @@ def create_app(
     )
     app.state.store = store
     app.state.broker = broker
+
+    def apply_configured_observer_position(row: dict[str, Any]) -> dict[str, Any]:
+        """Use trusted site coordinates when an observer has not sent a position packet."""
+        if row.get("latitude") is not None and row.get("longitude") is not None:
+            return row
+        configured = next(
+            (
+                value
+                for value in observer_config.values()
+                if value.get("observer_node_num") == row.get("node_num")
+            ),
+            None,
+        )
+        if configured is None:
+            return row
+        latitude = configured.get("latitude")
+        longitude = configured.get("longitude")
+        if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+            return row
+        return {
+            **row,
+            "latitude": latitude,
+            "longitude": longitude,
+            "positioned": 1,
+            "position_source": "CONFIGURED_OBSERVER",
+        }
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
@@ -165,7 +191,7 @@ def create_app(
 
     @app.get("/api/v1/node-summaries")
     def node_summaries(limit: int = Query(5000, ge=1, le=10000)) -> list[dict[str, Any]]:
-        return store.list_node_summaries(limit)
+        return [apply_configured_observer_position(row) for row in store.list_node_summaries(limit)]
 
     @app.get("/api/v1/quality")
     def quality() -> dict[str, Any]:
@@ -211,7 +237,7 @@ def create_app(
         result = store.get_node_detail(node_num)
         if result is None:
             raise HTTPException(404, "node not found")
-        return result
+        return apply_configured_observer_position(result)
 
     @app.get("/api/v1/nodes/{node_num}/activity")
     def node_activity(
