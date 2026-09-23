@@ -235,29 +235,45 @@ class AtlasStore:
         existing = {
             row["name"] for row in self.connection.execute("PRAGMA table_info(node_summaries)")
         }
-        if "last_packet_seen" not in existing:
+        added = "last_packet_seen" not in existing
+        if added:
             self.connection.execute("ALTER TABLE node_summaries ADD COLUMN last_packet_seen TEXT")
-            self.connection.execute(
+        needs_backfill = added or (
+            self.connection.execute("SELECT count(*) FROM node_summaries").fetchone()[0] > 0
+            and self.connection.execute(
+                "SELECT count(*) FROM node_summaries WHERE last_packet_seen IS NOT NULL"
+            ).fetchone()[0]
+            == 0
+        )
+        if needs_backfill:
+            self.connection.executescript(
                 """
+                CREATE TEMP TABLE atlas_packet_activity AS
                 WITH packet_activity AS (
                     SELECT json_extract(raw_event, '$.from_node') AS node_num,
-                           max(observed_at) AS latest
+                           observed_at AS seen_at
                     FROM observations
                     WHERE json_type(raw_event, '$.packet_id')='integer'
-                    GROUP BY node_num
                     UNION ALL
-                    SELECT json_extract(raw_event, '$.from_node') AS node_num,
-                           max(observed_at) AS latest
+                    SELECT json_extract(raw_event, '$.to_node'), observed_at FROM observations
+                    WHERE json_type(raw_event, '$.packet_id')='integer'
+                    UNION ALL
+                    SELECT json_extract(raw_event, '$.from_node'), observed_at
                     FROM events
                     WHERE json_type(raw_event, '$.packet_id')='integer'
-                    GROUP BY node_num
-                ), latest_by_node AS (
-                    SELECT node_num, max(latest) AS latest FROM packet_activity
-                    WHERE node_num IS NOT NULL GROUP BY node_num
+                    UNION ALL
+                    SELECT json_extract(raw_event, '$.to_node'), observed_at FROM events
+                    WHERE json_type(raw_event, '$.packet_id')='integer'
                 )
+                SELECT node_num, max(seen_at) AS latest FROM packet_activity
+                WHERE node_num IS NOT NULL AND node_num NOT IN (0, 4294967295)
+                GROUP BY node_num;
+                CREATE INDEX atlas_packet_activity_node_idx ON atlas_packet_activity(node_num);
                 UPDATE node_summaries SET last_packet_seen=(
-                    SELECT latest FROM latest_by_node WHERE latest_by_node.node_num=node_summaries.node_num
-                )
+                    SELECT latest FROM atlas_packet_activity
+                    WHERE atlas_packet_activity.node_num=node_summaries.node_num
+                );
+                DROP TABLE atlas_packet_activity;
                 """
             )
         self.connection.commit()
