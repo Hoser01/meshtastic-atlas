@@ -1047,6 +1047,7 @@ class AtlasStore:
                        m.firmware_version, m.device_state_version, m.has_wifi,
                        m.has_bluetooth, m.has_ethernet, m.has_remote_hardware,
                        m.has_pki, m.is_licensed, m.is_unmessagable,
+                       m.updated_at AS identity_updated_at,
                        p.latitude, p.longitude, p.altitude,
                        p.observed_at AS position_observed_at,
                        CASE WHEN p.event_id IS NULL THEN 0 ELSE 1 END AS positioned,

@@ -76,6 +76,11 @@ def test_read_api_and_authenticated_ingestion(tmp_path) -> None:
         summaries = client.get("/api/v1/node-summaries").json()
         assert len(summaries) == 1
         assert summaries[0]["node_num"] == 100
+        compatibility = client.get("/api/v1/map-feed").json()["100"]
+        assert compatibility["id"] == "0x64"
+        assert compatibility["name"] is None
+        assert compatibility["lat"] == 30.213
+        assert compatibility["src_rf"] is True
         node_detail = client.get("/api/v1/nodes/100").json()
         assert node_detail["last_source"] == "RF_OBSERVED"
         assert node_detail["last_rf_seen"] == "2026-09-18T13:00:00Z"

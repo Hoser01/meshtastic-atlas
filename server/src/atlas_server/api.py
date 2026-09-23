@@ -7,6 +7,8 @@ import hmac
 import json
 import math
 import os
+import threading
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -70,7 +72,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.21", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.22", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -80,6 +82,19 @@ def create_app(
     )
     app.state.store = store
     app.state.broker = broker
+    summary_cache: tuple[float, list[dict[str, Any]]] = (0.0, [])
+    summary_cache_lock = threading.Lock()
+
+    def cached_node_summaries(limit: int) -> list[dict[str, Any]]:
+        nonlocal summary_cache
+        now = time.monotonic()
+        with summary_cache_lock:
+            cached_at, cached_rows = summary_cache
+            if cached_rows and now - cached_at < 10:
+                return cached_rows[:limit]
+            rows = store.list_node_summaries(10000)
+            summary_cache = (now, rows)
+            return rows[:limit]
 
     def apply_configured_observer_position(row: dict[str, Any]) -> dict[str, Any]:
         """Use trusted site coordinates when an observer has not sent a position packet."""
@@ -191,7 +206,42 @@ def create_app(
 
     @app.get("/api/v1/node-summaries")
     def node_summaries(limit: int = Query(5000, ge=1, le=10000)) -> list[dict[str, Any]]:
-        return [apply_configured_observer_position(row) for row in store.list_node_summaries(limit)]
+        return [apply_configured_observer_position(row) for row in cached_node_summaries(limit)]
+
+    @app.get("/api/v1/map-feed")
+    def map_feed() -> dict[str, dict[str, Any]]:
+        """Compatibility feed for the legacy LZMesh map without replacing old feeders."""
+        now = datetime.now(timezone.utc)
+        result: dict[str, dict[str, Any]] = {}
+        for raw_row in cached_node_summaries(10000):
+            row = apply_configured_observer_position(raw_row)
+            activity_at = row.get("last_packet_seen") or row.get("last_heard")
+            age_minutes = 999_999
+            if activity_at:
+                parsed = datetime.fromisoformat(str(activity_at).replace("Z", "+00:00"))
+                age_minutes = max(0, int((now - parsed).total_seconds() // 60))
+            node_num = int(row["node_num"])
+            result[str(node_num)] = {
+                "id": f"0x{node_num & 0xFFFFFFFF:x}",
+                "node_num": node_num,
+                "short_name": row.get("short_name"),
+                "name": row.get("long_name"),
+                "firmware_version": row.get("firmware_version"),
+                "hardware_model": row.get("hardware_model"),
+                "role": row.get("role"),
+                "lat": row.get("latitude"),
+                "lng": row.get("longitude"),
+                "alt": row.get("altitude"),
+                "ageMin": age_minutes,
+                "activity_at": activity_at,
+                "position_at": row.get("position_observed_at"),
+                "identity_at": row.get("identity_updated_at"),
+                "position_source": row.get("position_source", "PACKET"),
+                "src_rf": bool(row.get("rf_observations")),
+                "src_mqtt": bool(row.get("mqtt_observations")),
+                "observer_id": row.get("last_observer_id"),
+            }
+        return result
 
     @app.get("/api/v1/quality")
     def quality() -> dict[str, Any]:
