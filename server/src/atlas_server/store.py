@@ -1050,6 +1050,8 @@ class AtlasStore:
                        m.updated_at AS identity_updated_at,
                        p.latitude, p.longitude, p.altitude,
                        p.observed_at AS position_observed_at,
+                       latest_rf.observer_id AS latest_rf_observer_id,
+                       latest_rf.observed_at AS latest_rf_observed_at,
                        CASE WHEN p.event_id IS NULL THEN 0 ELSE 1 END AS positioned,
                        coalesce(c.rf_observations, 0) AS rf_observations,
                        coalesce(c.remote_rf_observations, 0) AS remote_rf_observations,
@@ -1065,6 +1067,11 @@ class AtlasStore:
                     SELECT latest.event_id FROM positions latest
                     WHERE latest.node_num=s.node_num
                     ORDER BY latest.observed_at DESC LIMIT 1
+                )
+                LEFT JOIN observations latest_rf ON latest_rf.event_id=(
+                    SELECT latest_observation.event_id FROM observations latest_observation
+                    WHERE json_extract(latest_observation.raw_event, '$.from_node')=s.node_num
+                    ORDER BY latest_observation.observed_at DESC LIMIT 1
                 )
                 ORDER BY s.last_heard DESC LIMIT ?
                 """,

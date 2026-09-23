@@ -239,7 +239,8 @@ def create_app(
                 "position_source": row.get("position_source", "PACKET"),
                 "src_rf": bool(row.get("rf_observations")),
                 "src_mqtt": bool(row.get("mqtt_observations")),
-                "observer_id": row.get("last_observer_id"),
+                "observer_id": row.get("latest_rf_observer_id"),
+                "rf_observed_at": row.get("latest_rf_observed_at"),
             }
         return result
 
