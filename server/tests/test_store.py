@@ -69,6 +69,45 @@ def test_non_observation_event_is_stored_idempotently(tmp_path) -> None:
         store.close()
 
 
+def test_observer_health_counts_only_connection_errors_from_last_24_hours(tmp_path) -> None:
+    store = AtlasStore(tmp_path / "atlas.db")
+    now = datetime.now(timezone.utc)
+
+    def timestamp(delta: timedelta) -> str:
+        return (now + delta).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    heartbeat = {
+        "schema_version": 1,
+        "event_id": "d" * 32,
+        "event": "collector_heartbeat",
+        "observer_id": "A",
+        "observer_node_num": 1,
+        "observer_node_id": "!00000001",
+        "observed_at": timestamp(timedelta()),
+        "mux_connected": True,
+        "delivery_queue_depth": 0,
+    }
+    recent_error = {
+        **heartbeat,
+        "event_id": "e" * 32,
+        "event": "observer_connection_error",
+        "observed_at": timestamp(timedelta(hours=-1)),
+    }
+    old_error = {
+        **heartbeat,
+        "event_id": "f" * 32,
+        "event": "observer_connection_error",
+        "observed_at": timestamp(timedelta(hours=-25)),
+    }
+    try:
+        assert store.ingest(heartbeat)
+        assert store.ingest(recent_error)
+        assert store.ingest(old_error)
+        assert store.list_observer_health()[0]["errors_24h"] == 1
+    finally:
+        store.close()
+
+
 def test_packet_lifecycle_keeps_identity_and_latest_status(tmp_path) -> None:
     store = AtlasStore(tmp_path / "atlas.db")
     now = datetime.now(timezone.utc)

@@ -853,7 +853,9 @@ class AtlasStore:
                        (SELECT count(*) FROM events errors
                         WHERE errors.observer_id=e.observer_id
                           AND errors.event_type='observer_connection_error'
-                          AND errors.observed_at>=datetime('now', '-24 hours')) AS errors_24h
+                          AND errors.observed_at>=strftime(
+                              '%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours'
+                          )) AS errors_24h
                 FROM events e
                 JOIN (
                     SELECT observer_id, max(observed_at) AS latest
