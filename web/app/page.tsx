@@ -147,6 +147,7 @@ type NodeSummary = {
   last_observer_id: string;
   last_rssi: number | null;
   last_snr: number | null;
+  last_packet_seen: string | null;
   sent_observations: number;
   received_observations: number;
   positioned: number;
@@ -375,7 +376,18 @@ export default function Home() {
     }); });
   const displayedNodes = apiHealthy
     ? [...observerNodes, ...liveNodes.filter((node) => {
-        const age = node.observedAt ? Date.now() - new Date(node.observedAt).getTime() : 0;
+        const nodeNum = parseInt(node.id.slice(1), 16) >>> 0;
+        const lastPacketSeen = nodeSummaries.find((summary) => summary.node_num === nodeNum)?.last_packet_seen;
+        const newestLivePacket = activity.reduce((latest, item) => {
+          if (item.packet_id === undefined || ![item.from_node, item.to_node, item.observer_node_num].includes(nodeNum)) return latest;
+          return Math.max(latest, new Date(item.observed_at).getTime());
+        }, 0);
+        const evidenceTime = Math.max(
+          node.observedAt ? new Date(node.observedAt).getTime() : 0,
+          lastPacketSeen ? new Date(lastPacketSeen).getTime() : 0,
+          newestLivePacket,
+        );
+        const age = evidenceTime ? Date.now() - evidenceTime : Number.POSITIVE_INFINITY;
         const retention = node.provenance === "REMOTE GATEWAY RF" || node.provenance === "MQTT NETWORK"
           ? 24 * 60 * 60_000 : 30 * 24 * 60 * 60_000;
         return age <= retention && !observerNodes.some((observer) => observer.id === node.id);

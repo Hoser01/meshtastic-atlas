@@ -258,7 +258,9 @@ def test_node_summaries_are_unique_ordered_and_include_received_activity(tmp_pat
         assert summaries[0]["display_provenance"] == "RF_OBSERVED"
         assert summaries[0]["rf_observations"] == 2
         assert summaries[0]["sent_observations"] == 2
+        assert summaries[0]["last_packet_seen"] == "2026-09-18T13:05:00Z"
         assert summaries[1]["received_observations"] == 2
+        assert summaries[1]["last_packet_seen"] == "2026-09-18T13:05:00Z"
         assert store.list_node_activity(200)[0]["node_direction"] == "received"
         assert len(store.list_node_activity(100)) == 2
         quality = store.quality_metrics()

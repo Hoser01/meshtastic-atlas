@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS node_summaries (
     last_observer_id TEXT NOT NULL,
     last_rssi INTEGER,
     last_snr REAL,
+    last_packet_seen TEXT,
     sent_observations INTEGER NOT NULL DEFAULT 0,
     received_observations INTEGER NOT NULL DEFAULT 0
 );
@@ -203,6 +204,7 @@ class AtlasStore:
         self.connection.executescript(SCHEMA)
         self.lock = threading.RLock()
         self._ensure_node_metadata_columns()
+        self._ensure_node_summary_columns()
         self._normalize_mqtt_provenance()
         self._backfill_coverage_evidence()
         self._backfill_node_summaries()
@@ -227,6 +229,37 @@ class AtlasStore:
                 self.connection.execute(
                     f"ALTER TABLE node_metadata ADD COLUMN {column} {data_type}"
                 )
+        self.connection.commit()
+
+    def _ensure_node_summary_columns(self) -> None:
+        existing = {
+            row["name"] for row in self.connection.execute("PRAGMA table_info(node_summaries)")
+        }
+        if "last_packet_seen" not in existing:
+            self.connection.execute("ALTER TABLE node_summaries ADD COLUMN last_packet_seen TEXT")
+            self.connection.execute(
+                """
+                WITH packet_activity AS (
+                    SELECT json_extract(raw_event, '$.from_node') AS node_num,
+                           max(observed_at) AS latest
+                    FROM observations
+                    WHERE json_type(raw_event, '$.packet_id')='integer'
+                    GROUP BY node_num
+                    UNION ALL
+                    SELECT json_extract(raw_event, '$.from_node') AS node_num,
+                           max(observed_at) AS latest
+                    FROM events
+                    WHERE json_type(raw_event, '$.packet_id')='integer'
+                    GROUP BY node_num
+                ), latest_by_node AS (
+                    SELECT node_num, max(latest) AS latest FROM packet_activity
+                    WHERE node_num IS NOT NULL GROUP BY node_num
+                )
+                UPDATE node_summaries SET last_packet_seen=(
+                    SELECT latest FROM latest_by_node WHERE latest_by_node.node_num=node_summaries.node_num
+                )
+                """
+            )
         self.connection.commit()
 
     def _normalize_mqtt_provenance(self) -> None:
@@ -422,6 +455,7 @@ class AtlasStore:
             return
         observed_at = event["observed_at"]
         source = str(event.get("source", "UNKNOWN"))
+        packet_seen = observed_at if isinstance(event.get("packet_id"), int) else None
         values = (
             sender,
             observed_at,
@@ -432,13 +466,15 @@ class AtlasStore:
             event["observer_id"],
             event.get("rx_rssi"),
             event.get("rx_snr"),
+            packet_seen,
         )
         self.connection.execute(
             """
             INSERT INTO node_summaries
                 (node_num, first_heard, last_heard, last_event_id, last_event_type,
-                 last_source, last_observer_id, last_rssi, last_snr, sent_observations)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 last_source, last_observer_id, last_rssi, last_snr, last_packet_seen,
+                 sent_observations)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(node_num) DO UPDATE SET
                 first_heard=min(node_summaries.first_heard, excluded.first_heard),
                 last_heard=max(node_summaries.last_heard, excluded.last_heard),
@@ -454,6 +490,11 @@ class AtlasStore:
                     THEN excluded.last_rssi ELSE node_summaries.last_rssi END,
                 last_snr=CASE WHEN excluded.last_heard>=node_summaries.last_heard
                     THEN excluded.last_snr ELSE node_summaries.last_snr END,
+                last_packet_seen=CASE
+                    WHEN excluded.last_packet_seen IS NOT NULL AND
+                         (node_summaries.last_packet_seen IS NULL OR
+                          excluded.last_packet_seen>=node_summaries.last_packet_seen)
+                    THEN excluded.last_packet_seen ELSE node_summaries.last_packet_seen END,
                 sent_observations=node_summaries.sent_observations+1
             """,
             values,
@@ -465,8 +506,9 @@ class AtlasStore:
             """
             INSERT INTO node_summaries
                 (node_num, first_heard, last_heard, last_event_id, last_event_type,
-                 last_source, last_observer_id, last_rssi, last_snr, received_observations)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 1)
+                 last_source, last_observer_id, last_rssi, last_snr, last_packet_seen,
+                 received_observations)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 1)
             ON CONFLICT(node_num) DO UPDATE SET
                 first_heard=min(node_summaries.first_heard, excluded.first_heard),
                 last_heard=max(node_summaries.last_heard, excluded.last_heard),
@@ -478,6 +520,11 @@ class AtlasStore:
                     THEN excluded.last_source ELSE node_summaries.last_source END,
                 last_observer_id=CASE WHEN excluded.last_heard>=node_summaries.last_heard
                     THEN excluded.last_observer_id ELSE node_summaries.last_observer_id END,
+                last_packet_seen=CASE
+                    WHEN excluded.last_packet_seen IS NOT NULL AND
+                         (node_summaries.last_packet_seen IS NULL OR
+                          excluded.last_packet_seen>=node_summaries.last_packet_seen)
+                    THEN excluded.last_packet_seen ELSE node_summaries.last_packet_seen END,
                 received_observations=node_summaries.received_observations+1
             """,
             (
@@ -488,6 +535,7 @@ class AtlasStore:
                 event["event"],
                 source,
                 event["observer_id"],
+                packet_seen,
             ),
         )
 
