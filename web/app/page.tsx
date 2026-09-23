@@ -293,6 +293,8 @@ export default function Home() {
   const hoverPopup = useRef<Popup | null>(null);
   const predictionInput = useRef<HTMLInputElement>(null);
   const layersPanel = useRef<HTMLDetailsElement>(null);
+  const summaryRefreshAt = useRef(0);
+  const healthRefreshAt = useRef(0);
   const displayedNodesRef = useRef<MeshNode[]>([]);
   const nodeSummariesRef = useRef<NodeSummary[]>([]);
   const animationLinks = useRef<Array<{ from: [number, number]; to: [number, number]; kind: "reception" | "addressed" | "mqtt" | "rf_text" | "traceroute"; pathStyle: "logical" | "confirmed" | "trace"; observedAt: string }>>([]);
@@ -339,6 +341,8 @@ export default function Home() {
   const [uiScale, setUiScale] = useState(1.05);
   const [apiHealthy, setApiHealthy] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [qualityViewLoading, setQualityViewLoading] = useState(false);
   useEffect(() => {
     const stored = Number(window.localStorage.getItem("atlas-ui-scale"));
     if (Number.isFinite(stored) && stored >= 0.9 && stored <= 1.2) setUiScale(stored);
@@ -443,35 +447,52 @@ export default function Home() {
       }
       refreshing = true;
       try {
-        const [healthResponse, nodeResponse, summaryResponse, activityResponse, observerResponse, timelineResponse] = await Promise.all([
-          fetch(`${base}/api/v1/health`),
+        const [nodeResponse, activityResponse, observerResponse, timelineResponse] = await Promise.all([
           fetch(`${base}/api/v1/nodes?limit=500`),
-          fetch(`${base}/api/v1/node-summaries?limit=1000`),
           fetch(`${base}/api/v1/activity?limit=250`),
           fetch(`${base}/api/v1/observers`),
           fetch(`${base}/api/v1/activity/timeline?minutes=15`),
         ]);
-        if (!healthResponse.ok || !nodeResponse.ok || !summaryResponse.ok || !activityResponse.ok || !observerResponse.ok || !timelineResponse.ok) throw new Error("ATLAS API unavailable");
+        if (!nodeResponse.ok || !activityResponse.ok || !observerResponse.ok || !timelineResponse.ok) throw new Error("ATLAS API unavailable");
         if (closed) return;
         setApiHealthy(true);
-        setHealth(await healthResponse.json());
         const positionedNodes = ((await nodeResponse.json()) as ApiNode[]).map(toMeshNode);
-        const summaries = (await summaryResponse.json()) as NodeSummary[];
-        setNodeSummaries(summaries);
         setActivity((await activityResponse.json()) as ActivityEvent[]);
         setObservers((await observerResponse.json()) as ApiObserver[]);
         setTimelineData((await timelineResponse.json()) as TimelineData);
         setLiveNodes(positionedNodes);
+        setInitialLoading(false);
         setSelected((current) => current
           ? positionedNodes.find((node) => node.id === current.id) ?? current
           : null);
-        setSelectedNode((current) => {
-          if (!current) return null;
-          const refreshed = summaries.find((node) => node.node_num === current.node_num);
-          return refreshed ? { ...current, ...refreshed } : current;
-        });
+        const now = Date.now();
+        const enrichmentRequests: Array<Promise<void>> = [];
+        if (now >= summaryRefreshAt.current) {
+          summaryRefreshAt.current = now + 30_000;
+          enrichmentRequests.push(fetch(`${base}/api/v1/node-summaries?limit=1000`)
+            .then((response) => response.ok ? response.json() as Promise<NodeSummary[]> : Promise.reject())
+            .then((summaries) => {
+              if (closed) return;
+              setNodeSummaries(summaries);
+              setSelectedNode((current) => {
+                if (!current) return null;
+                const refreshed = summaries.find((node) => node.node_num === current.node_num);
+                return refreshed ? { ...current, ...refreshed } : current;
+              });
+            }));
+        }
+        if (now >= healthRefreshAt.current) {
+          healthRefreshAt.current = now + 30_000;
+          enrichmentRequests.push(fetch(`${base}/api/v1/health`)
+            .then((response) => response.ok ? response.json() as Promise<Health> : Promise.reject())
+            .then((data) => { if (!closed) setHealth(data); }));
+        }
+        await Promise.allSettled(enrichmentRequests);
       } catch {
-        if (!closed) setApiHealthy(false);
+        if (!closed) {
+          setApiHealthy(false);
+          setInitialLoading(false);
+        }
       } finally {
         refreshing = false;
         if (refreshPending && !closed) {
@@ -540,11 +561,12 @@ export default function Home() {
     const path = qualityView === "gateways" ? "/api/v1/quality/gateways?hours=24"
       : qualityView === "packets" ? "/api/v1/quality/packets?hours=24&limit=500"
       : "/api/v1/quality/warnings?hours=24&limit=500";
+    setQualityViewLoading(true);
     fetch(`${base}${path}`, { signal: controller.signal }).then((response) => response.json()).then((data) => {
       if (qualityView === "gateways") setGatewayQuality(data as GatewayQuality[]);
       else if (qualityView === "packets") setLogicalPackets(data as LogicalPacket[]);
       else setQualityWarnings(data as QualityWarning[]);
-    }).catch(() => undefined);
+    }).catch(() => undefined).finally(() => setQualityViewLoading(false));
     return () => controller.abort();
   }, [qualityView]);
 
@@ -589,9 +611,9 @@ export default function Home() {
       .then((response) => response.ok ? response.json() as Promise<QualityMetrics> : Promise.reject())
       .then(setQuality)
       .catch(() => undefined);
-    void load();
+    const initialTimer = window.setTimeout(() => void load(), 2_500);
     const timer = window.setInterval(() => void load(), 30_000);
-    return () => { window.clearInterval(timer); controller.abort(); };
+    return () => { window.clearTimeout(initialTimer); window.clearInterval(timer); controller.abort(); };
   }, []);
 
   useEffect(() => {
@@ -1402,6 +1424,11 @@ export default function Home() {
       </header>
 
       <section className="workspace">
+        {initialLoading && <div className="initial-loader" role="status" aria-live="polite">
+          <span className="loader-pulse"><Radio size={18} /></span>
+          <strong>LOADING A MESHTON OF DATA…</strong>
+          <small>Synchronizing live nodes and packet activity</small>
+        </div>}
         <div ref={mapContainer} className="map-canvas" aria-label="Meshtastic node map" />
         {mapError && <div className="map-error"><strong>MAP RENDERER OFFLINE</strong><span>{mapError}</span></div>}
         {apiHealthy && !followedPacket && <div className={`animation-status ${drawablePathCount ? "active" : ""}`}><Activity size={12} /> RF LIVE · {animationStatus}</div>}
@@ -1514,6 +1541,7 @@ export default function Home() {
           <button className="detail-close" onClick={() => setQualityView(null)} aria-label="Close quality inspector"><X size={16} /></button>
           <span className="eyebrow">DATA QUALITY · LAST 24 HOURS</span>
           <div className="quality-tabs"><button className={qualityView === "gateways" ? "active" : ""} onClick={() => openQualityView("gateways")}>GATEWAYS</button><button className={qualityView === "packets" ? "active" : ""} onClick={() => openQualityView("packets")}>PACKETS</button><button className={qualityView === "warnings" ? "active" : ""} onClick={() => openQualityView("warnings")}>WARNINGS</button></div>
+          {qualityViewLoading && <div className="panel-loader"><span className="loader-pulse"><Activity size={15} /></span><strong>ANALYZING PACKET EVIDENCE…</strong><small>Large histories may take a moment</small></div>}
           {qualityView === "gateways" && <>
             {selectedGateway && <div className="quality-selection">
               <button onClick={() => setSelectedGateway(null)}><X size={12} /> GATEWAY DETAIL</button>
