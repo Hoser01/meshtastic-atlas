@@ -39,6 +39,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 type Provenance = "RF OBSERVED" | "REMOTE GATEWAY RF" | "MQTT NETWORK" | "LOCAL TX" | "UNKNOWN";
 type ApiProvenance = "RF_OBSERVED" | "REMOTE_GATEWAY_RF" | "MQTT_NETWORK" | "LOCAL_TX" | "UNKNOWN";
 
+const isInvalidZeroPosition = (longitude: number, latitude: number) =>
+  Math.abs(longitude) < 0.000001 && Math.abs(latitude) < 0.000001;
+
 type MeshNode = {
   id: string;
   label: string;
@@ -293,6 +296,7 @@ export default function Home() {
   const hoverPopup = useRef<Popup | null>(null);
   const predictionInput = useRef<HTMLInputElement>(null);
   const layersPanel = useRef<HTMLDetailsElement>(null);
+  const locationWarningTimer = useRef<number | undefined>(undefined);
   const summaryRefreshAt = useRef(0);
   const healthRefreshAt = useRef(0);
   const displayedNodesRef = useRef<MeshNode[]>([]);
@@ -343,6 +347,12 @@ export default function Home() {
   const [mapError, setMapError] = useState<string | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
   const [qualityViewLoading, setQualityViewLoading] = useState(false);
+  const [locationWarning, setLocationWarning] = useState<string | null>(null);
+  const showLocationWarning = () => {
+    setLocationWarning("LOCATION SET INCORRECTLY · NODE REPORTED 0,0");
+    if (locationWarningTimer.current !== undefined) window.clearTimeout(locationWarningTimer.current);
+    locationWarningTimer.current = window.setTimeout(() => setLocationWarning(null), 3_500);
+  };
   useEffect(() => {
     const stored = Number(window.localStorage.getItem("atlas-ui-scale"));
     if (Number.isFinite(stored) && stored >= 0.9 && stored <= 1.2) setUiScale(stored);
@@ -962,6 +972,11 @@ export default function Home() {
       const feature = event.features?.[0];
       const clusterId = Number(feature?.properties?.cluster_id);
       if (!feature || feature.geometry.type !== "Point" || !Number.isFinite(clusterId)) return;
+      const coordinates = feature.geometry.coordinates as [number, number];
+      if (isInvalidZeroPosition(coordinates[0], coordinates[1])) {
+        showLocationWarning();
+        return;
+      }
       const source = instance.getSource("atlas-nodes") as GeoJSONSource | undefined;
       if (!source) return;
       try {
@@ -991,6 +1006,10 @@ export default function Home() {
       if (node) {
         const summary = nodeSummariesRef.current.find((item) => `!${(item.node_num >>> 0).toString(16).padStart(8, "0")}` === id);
         setSelected(node); setSelectedNode(summary ?? null); setSelectedActivity(null); setDetailOpen(true);
+        if (isInvalidZeroPosition(node.lng, node.lat)) {
+          showLocationWarning();
+          return;
+        }
         instance.flyTo({ center: [node.lng, node.lat], zoom: Math.max(instance.getZoom(), 12), duration: 650 });
       }
     });
@@ -1096,6 +1115,10 @@ export default function Home() {
         el.onclick = () => {
           const summary = nodeSummaries.find((item) => `!${(item.node_num >>> 0).toString(16).padStart(8, "0")}` === node.id);
           setSelected(node); setSelectedNode(summary ?? null); setSelectedActivity(null); setDetailOpen(true);
+          if (isInvalidZeroPosition(node.lng, node.lat)) {
+            showLocationWarning();
+            return;
+          }
           instance.flyTo({ center: [node.lng, node.lat], zoom: Math.max(instance.getZoom(), 13), duration: 650 });
         };
         markers.current.push(new Marker({ element: el, anchor: "center" }).setLngLat([node.lng, node.lat]).addTo(instance));
@@ -1297,9 +1320,14 @@ export default function Home() {
       })),
     });
     if (points.length) {
+      const navigablePoints = points.filter(({ node }) => !isInvalidZeroPosition(node.lng, node.lat));
+      if (!navigablePoints.length) {
+        showLocationWarning();
+        return;
+      }
       const bounds = new LngLatBounds();
-      points.forEach(({ node }) => bounds.extend([node.lng, node.lat]));
-      if (points.length === 1) map.current.flyTo({ center: [points[0].node.lng, points[0].node.lat], zoom: 13, duration: 800 });
+      navigablePoints.forEach(({ node }) => bounds.extend([node.lng, node.lat]));
+      if (navigablePoints.length === 1) map.current.flyTo({ center: [navigablePoints[0].node.lng, navigablePoints[0].node.lat], zoom: 13, duration: 800 });
       else map.current.fitBounds(bounds, { padding: { top: 100, right: 430, bottom: 100, left: 310 }, maxZoom: 13, duration: 950 });
     }
   }, [displayedNodes, followedPacket, mapReady]);
@@ -1315,7 +1343,8 @@ export default function Home() {
     setSelectedNode(summary);
     setSelectedActivity(null);
     setDetailOpen(true);
-    if (match) map.current?.flyTo({ center: [match.lng, match.lat], zoom: Math.max(map.current.getZoom(), 13), duration: 700 });
+    if (match && isInvalidZeroPosition(match.lng, match.lat)) showLocationWarning();
+    else if (match) map.current?.flyTo({ center: [match.lng, match.lat], zoom: Math.max(map.current.getZoom(), 13), duration: 700 });
   };
 
   const selectNodeSummary = (summary: NodeSummary) => {
@@ -1326,7 +1355,8 @@ export default function Home() {
     setSelectedActivity(null);
     setDetailOpen(true);
     setPanelOpen(false);
-    if (mapNode) map.current?.flyTo({ center: [mapNode.lng, mapNode.lat], zoom: Math.max(map.current.getZoom(), 13), duration: 700 });
+    if (mapNode && isInvalidZeroPosition(mapNode.lng, mapNode.lat)) showLocationWarning();
+    else if (mapNode) map.current?.flyTo({ center: [mapNode.lng, mapNode.lat], zoom: Math.max(map.current.getZoom(), 13), duration: 700 });
   };
 
   const flyHome = () => {
@@ -1424,6 +1454,7 @@ export default function Home() {
       </header>
 
       <section className="workspace">
+        {locationWarning && <div className="location-warning" role="status" aria-live="polite"><Crosshair size={15} /><span>{locationWarning}</span></div>}
         {initialLoading && <div className="initial-loader" role="status" aria-live="polite">
           <span className="loader-pulse"><Radio size={18} /></span>
           <strong>LOADING A MESHTON OF DATA…</strong>

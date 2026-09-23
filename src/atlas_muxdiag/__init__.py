@@ -1,3 +1,3 @@
 """ATLAS Phase 0 Meshtastic MUX diagnostics."""
 
-__version__ = "0.3.19"
+__version__ = "0.3.20"
