@@ -1042,6 +1042,16 @@ class AtlasStore:
                                json_extract(raw_event, '$.source') AS source,
                                json_extract(raw_event, '$.observer_id') AS observer_id FROM events
                     ) WHERE from_node IS NOT NULL GROUP BY from_node
+                ), latest_direct_rf AS (
+                    SELECT node_num, observer_id, observed_at FROM (
+                        SELECT t.from_node AS node_num, o.observer_id, o.observed_at,
+                               row_number() OVER (
+                                   PARTITION BY t.from_node ORDER BY o.observed_at DESC
+                               ) AS rank
+                        FROM observations o
+                        JOIN transmissions t ON t.id=o.transmission_id
+                        WHERE o.observer_id NOT LIKE 'MQTT:%'
+                    ) WHERE rank=1
                 )
                 SELECT s.*, m.node_id, m.long_name, m.short_name, m.hardware_model, m.role,
                        m.firmware_version, m.device_state_version, m.has_wifi,
@@ -1068,11 +1078,7 @@ class AtlasStore:
                     WHERE latest.node_num=s.node_num
                     ORDER BY latest.observed_at DESC LIMIT 1
                 )
-                LEFT JOIN observations latest_rf ON latest_rf.event_id=(
-                    SELECT latest_observation.event_id FROM observations latest_observation
-                    WHERE json_extract(latest_observation.raw_event, '$.from_node')=s.node_num
-                    ORDER BY latest_observation.observed_at DESC LIMIT 1
-                )
+                LEFT JOIN latest_direct_rf latest_rf ON latest_rf.node_num=s.node_num
                 ORDER BY s.last_heard DESC LIMIT ?
                 """,
                     (limit,),
