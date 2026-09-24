@@ -177,7 +177,8 @@ verified=false
 for _ in $(seq 1 18); do
   if python3 - "$health_url" "$observer_id" "$validation_started" <<'PY'
 import datetime,json,sys,urllib.request
-rows=json.load(urllib.request.urlopen(sys.argv[1],timeout=10))
+request=urllib.request.Request(sys.argv[1],headers={"User-Agent":"ATLAS-Installer/1"})
+rows=json.load(urllib.request.urlopen(request,timeout=10))
 row=next((x for x in rows if x.get("observer_id")==sys.argv[2]),None)
 if not row: raise SystemExit(1)
 heartbeat=row.get("last_heartbeat")
