@@ -166,6 +166,7 @@ source "$existing_env"
 set +a
 /opt/atlas-observer/current/bin/atlas-observer --check-config
 systemctl daemon-reload
+validation_started=$(date -u +%s)
 systemctl enable --now atlas-observer.service atlas-observer-update.timer
 sleep 4
 systemctl is-active --quiet atlas-observer.service || { journalctl -u atlas-observer.service -n 100 --no-pager; die "collector service failed"; }
@@ -174,11 +175,16 @@ health_url="${api_url%/api/v1/events}/api/v1/observer-health"
 echo "Waiting for the first verified collector heartbeat..."
 verified=false
 for _ in $(seq 1 18); do
-  if python3 - "$health_url" "$observer_id" <<'PY'
-import json,sys,urllib.request
+  if python3 - "$health_url" "$observer_id" "$validation_started" <<'PY'
+import datetime,json,sys,urllib.request
 rows=json.load(urllib.request.urlopen(sys.argv[1],timeout=10))
 row=next((x for x in rows if x.get("observer_id")==sys.argv[2]),None)
-if not row or row.get("status")!="online" or not row.get("mux_connected") or row.get("delivery_queue_depth") not in (0,None): raise SystemExit(1)
+if not row: raise SystemExit(1)
+heartbeat=row.get("last_heartbeat")
+if not heartbeat: raise SystemExit(1)
+heartbeat_epoch=datetime.datetime.fromisoformat(heartbeat.replace("Z","+00:00")).timestamp()
+if heartbeat_epoch < float(sys.argv[3]): raise SystemExit(1)
+if row.get("status")!="online" or not row.get("mux_connected") or row.get("delivery_queue_depth") not in (0,None): raise SystemExit(1)
 print(f"verified heartbeat: status={row['status']} mux_connected={row['mux_connected']} queue={row.get('delivery_queue_depth',0)}")
 PY
   then verified=true; break; fi
