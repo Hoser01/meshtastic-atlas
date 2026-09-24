@@ -1586,8 +1586,8 @@ export default function Home() {
 
         <div className="map-tools">
           <button onClick={flyHome} title="Regional view" data-tooltip="Regional view" aria-label="Frame Joplin, Springfield, and Fayetteville"><Crosshair size={17} /></button>
+          <button onClick={toggleProvenance} title="Provenance filter" data-tooltip="Provenance filter" aria-label="Toggle provenance filters"><SlidersHorizontal size={17} /></button>
           <button onClick={toggleLayers} title="Layers" data-tooltip="Layers" aria-label="Toggle map layers"><Layers3 size={17} /></button>
-          <button onClick={toggleProvenance} title="Provenance" data-tooltip="Provenance" aria-label="Toggle provenance filters"><SlidersHorizontal size={17} /></button>
           <button onClick={() => map.current?.zoomIn({ duration: 300 })} title="Zoom in" data-tooltip="Zoom in" aria-label="Zoom in"><Plus size={17} /></button>
           <button onClick={() => map.current?.zoomOut({ duration: 300 })} title="Zoom out" data-tooltip="Zoom out" aria-label="Zoom out"><Minus size={17} /></button>
         </div>
