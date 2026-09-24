@@ -87,7 +87,11 @@ ATLAS_INGEST_TOKEN=$token
 ATLAS_SITE_LATITUDE=$latitude
 ATLAS_SITE_LONGITUDE=$longitude
 EOF
-chmod 0600 "$TOKEN_FILE" "$SITE_FILE" "$bundle"
+api_group=$(systemctl show atlas-api.service -p Group --value)
+api_group=${api_group:-root}
+chown root:"$api_group" "$TOKEN_FILE" "$SITE_FILE"
+chmod 0640 "$TOKEN_FILE" "$SITE_FILE"
+chmod 0600 "$bundle"
 
 systemctl daemon-reload
 systemctl restart atlas-api.service
