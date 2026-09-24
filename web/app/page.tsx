@@ -347,6 +347,13 @@ function LegendContents() {
       <span><i className="legend-line reachability" /><b>Mesh reachability</b><small>Reported NeighborInfo relationship; not a measured coverage field.</small></span>
       <span><i className="legend-swatch predicted" /><b>Predicted coverage</b><small>Imported propagation-model output, kept separate from measurements.</small></span>
     </div>
+    <h3>MAP CONTROLS</h3>
+    <div className="help-legend control-legend">
+      <span><i><Crosshair size={15} /></i><b>Regional view</b><small>Frames Joplin, Springfield, and Fayetteville.</small></span>
+      <span><i><Layers3 size={15} /></i><b>Layers</b><small>Opens or closes map overlays such as coverage, reachability, heatmaps, and packet paths.</small></span>
+      <span><i><SlidersHorizontal size={15} /></i><b>Provenance</b><small>Opens or closes RF observed, remote-gateway RF, and MQTT visibility filters.</small></span>
+      <span><i className="legend-zoom"><Plus size={12} /><Minus size={12} /></i><b>Map zoom</b><small>Changes map scale only; the separate title-bar control changes interface text size.</small></span>
+    </div>
   </div>;
 }
 
