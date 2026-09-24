@@ -283,6 +283,32 @@ function toMeshNode(node: ApiNode): MeshNode {
   };
 }
 
+function summaryToMeshNode(node: NodeSummary): MeshNode | null {
+  if (node.latitude === null || node.longitude === null) return null;
+  const id = `!${(node.node_num >>> 0).toString(16).padStart(8, "0")}`;
+  const advertisedName = node.short_name && node.long_name
+    ? `[${node.short_name}] ${node.long_name}`
+    : node.long_name || node.short_name || id.toUpperCase();
+  const provenance = displayProvenance(node.display_provenance);
+  return {
+    id,
+    label: advertisedName,
+    role: "Retained position",
+    lng: node.longitude,
+    lat: node.latitude,
+    hops: 0,
+    lastSeen: new Date(node.last_heard).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    snr: node.last_snr ?? 0,
+    rssi: node.last_rssi ?? 0,
+    provenance,
+    color: provenanceColor(provenance),
+    observedAt: node.position_observed_at ?? node.last_heard,
+    altitude: node.altitude,
+    hardwareModel: node.hardware_model,
+    shortName: node.short_name,
+  };
+}
+
 function StatusPill({ live }: { live: boolean }) {
   return (
     <span className={`status-pill ${live ? "status-live" : "status-paused"}`}>
@@ -412,7 +438,8 @@ export default function Home() {
   const displayedNodes = apiHealthy
     ? [...observerNodes, ...liveNodes.filter((node) => {
         const nodeNum = parseInt(node.id.slice(1), 16) >>> 0;
-        const lastPacketSeen = nodeSummaries.find((summary) => summary.node_num === nodeNum)?.last_packet_seen;
+        const summary = nodeSummaries.find((item) => item.node_num === nodeNum);
+        const lastPacketSeen = summary?.last_packet_seen;
         const newestLivePacket = activity.reduce((latest, item) => {
           if (item.packet_id === undefined || ![item.from_node, item.to_node, item.observer_node_num].includes(nodeNum)) return latest;
           return Math.max(latest, new Date(item.observed_at).getTime());
@@ -420,13 +447,15 @@ export default function Home() {
         const evidenceTime = Math.max(
           node.observedAt ? new Date(node.observedAt).getTime() : 0,
           lastPacketSeen ? new Date(lastPacketSeen).getTime() : 0,
+          summary?.last_heard ? new Date(summary.last_heard).getTime() : 0,
           newestLivePacket,
         );
         const age = evidenceTime ? Date.now() - evidenceTime : Number.POSITIVE_INFINITY;
         const retention = node.provenance === "REMOTE GATEWAY RF" || node.provenance === "MQTT NETWORK"
           ? 24 * 60 * 60_000 : 30 * 24 * 60 * 60_000;
-        return age <= retention && !observerNodes.some((observer) => observer.id === node.id);
-      })]
+        const isSelected = selectedNode?.node_num === nodeNum;
+        return (age <= retention || isSelected) && !observerNodes.some((observer) => observer.id === node.id);
+      }), ...selected && !liveNodes.some((node) => node.id === selected.id) ? [selected] : []]
     : demoNodes;
   displayedNodesRef.current = displayedNodes;
   nodeSummariesRef.current = nodeSummaries;
@@ -1412,7 +1441,9 @@ export default function Home() {
     const summary = filteredNodeSummaries[0];
     if (!summary) return;
     const id = `!${(summary.node_num >>> 0).toString(16).padStart(8, "0")}`;
-    const match = displayedNodes.find((node) => node.id === id) ?? null;
+    const match = displayedNodes.find((node) => node.id === id)
+      ?? liveNodes.find((node) => node.id === id)
+      ?? summaryToMeshNode(summary);
     setSelected(match);
     setSelectedNode(summary);
     setSelectedActivity(null);
@@ -1422,7 +1453,9 @@ export default function Home() {
 
   const selectNodeSummary = (summary: NodeSummary) => {
     const id = `!${(summary.node_num >>> 0).toString(16).padStart(8, "0")}`;
-    const mapNode = displayedNodes.find((node) => node.id === id) ?? null;
+    const mapNode = displayedNodes.find((node) => node.id === id)
+      ?? liveNodes.find((node) => node.id === id)
+      ?? summaryToMeshNode(summary);
     setSelectedNode(summary);
     setSelected(mapNode);
     setSelectedActivity(null);
