@@ -80,7 +80,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.26", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.27", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -467,6 +467,43 @@ def create_app(
         return {"type": "FeatureCollection", "features": features, "metadata": {
             "sample_count": sum(len(rows) for rows in buckets.values()), "cell_count": len(features),
             "cell_km": cell_km, "window_days": days,
+        }}
+
+    @app.get("/api/v1/coverage/reachability-surface")
+    def reachability_surface(days: float = Query(30, gt=0, le=90)) -> dict[str, Any]:
+        """Positioned endpoints known to have reached registered collectors over RF."""
+        now = datetime.now(timezone.utc)
+        latest: dict[tuple[str, int, int], dict[str, Any]] = {}
+        for row in store.list_reachability_evidence(20000):
+            if row["observer_id"] not in observer_config or row["observer_id"].startswith("MQTT:"):
+                continue
+            observed = datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
+            positioned = datetime.fromisoformat(row["position_observed_at"].replace("Z", "+00:00"))
+            age = max(0.0, (now - observed).total_seconds())
+            position_age = max(0.0, (observed - positioned).total_seconds())
+            hops = max(0, int(row.get("hop_start") or 0) - int(row.get("hop_limit") or 0))
+            if age > days * 86400 or position_age > 7 * 86400 or hops > 7:
+                continue
+            hour = int(observed.timestamp() // 3600)
+            key = (row["observer_id"], row["transmitter_node"], hour)
+            if key not in latest:
+                latest[key] = {**row, "age_seconds": age, "hops": hops}
+
+        features = []
+        for row in latest.values():
+            hop_weight = 1 / (1 + 0.45 * row["hops"])
+            recency = max(.08, 2 ** (-row["age_seconds"] / (7 * 86400)))
+            features.append({"type": "Feature", "properties": {
+                "observer_id": row["observer_id"], "transmitter_node": row["transmitter_node"],
+                "hops": row["hops"], "weight": round(hop_weight * recency, 4),
+                "hop_weight": round(hop_weight, 4), "age_seconds": round(row["age_seconds"]),
+                "evidence": "DIRECT" if row["hops"] == 0 else "MULTIHOP_REACHABILITY",
+            }, "geometry": {"type": "Point", "coordinates": [row["longitude"], row["latitude"]]}})
+        return {"type": "FeatureCollection", "features": features, "metadata": {
+            "sample_count": len(features),
+            "node_count": len({row["transmitter_node"] for row in latest.values()}),
+            "observer_count": len({row["observer_id"] for row in latest.values()}),
+            "window_days": days,
         }}
 
     @app.get("/api/v1/activity")

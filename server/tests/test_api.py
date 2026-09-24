@@ -260,6 +260,10 @@ def test_measured_coverage_api_includes_distance_and_age(tmp_path, monkeypatch) 
         assert cell["median_rssi"] == -80
         assert cell["observer_count"] == 1
         assert cell["node_count"] == 1
+        reachability = client.get("/api/v1/coverage/reachability-surface").json()
+        assert reachability["metadata"]["node_count"] == 1
+        assert reachability["features"][0]["properties"]["hops"] == 0
+        assert reachability["features"][0]["properties"]["evidence"] == "DIRECT"
 
 
 def test_remote_gateway_rf_is_distinct_from_direct_collector_rf(tmp_path) -> None:

@@ -239,8 +239,8 @@ type CoverageMeasurement = {
 
 type CoverageSurface = {
   type: "FeatureCollection";
-  features: Array<{ type: "Feature"; properties: Record<string, number | string | null>; geometry: { type: "Polygon"; coordinates: number[][][] } }>;
-  metadata: { sample_count: number; cell_count: number; cell_km: number; window_days: number };
+  features: Array<{ type: "Feature"; properties: Record<string, number | string | null>; geometry: { type: "Point"; coordinates: number[] } }>;
+  metadata: { sample_count: number; node_count: number; observer_count: number; window_days: number };
 };
 
 type ApiObserver = {
@@ -348,7 +348,7 @@ function LegendContents() {
     </div>
     <h3>MAP OVERLAYS</h3>
     <div className="help-legend">
-      <span><i className="legend-swatch measured" /><b>Measured RF evidence</b><small>Direct receptions weighted by RSSI/SNR, age, position, distance, and observer.</small></span>
+      <span><i className="legend-swatch measured" /><b>RF reachability heatmap</b><small>Areas containing positioned nodes whose packets reached a registered collector. Direct reception is strongest; multi-hop evidence is progressively down-weighted.</small></span>
       <span><i className="legend-swatch activity" /><b>Activity heatmap</b><small>Packet concentration around recently active positioned nodes.</small></span>
       <span><i className="legend-line reachability" /><b>Mesh reachability</b><small>Reported NeighborInfo relationship; not a measured coverage field.</small></span>
       <span><i className="legend-swatch predicted" /><b>Predicted coverage</b><small>Imported propagation-model output, kept separate from measurements.</small></span>
@@ -646,7 +646,7 @@ export default function Home() {
             .then(setCoverageMeasurements),
         );
         if (showCoverage) requests.push(
-          fetch(`${base}/api/v1/coverage/surface?days=30&cell_km=3`, { signal: controller.signal })
+          fetch(`${base}/api/v1/coverage/reachability-surface?days=30`, { signal: controller.signal })
             .then((response) => response.ok ? response.json() as Promise<CoverageSurface> : Promise.reject())
             .then(setCoverageSurface),
         );
@@ -801,7 +801,7 @@ export default function Home() {
   useEffect(() => {
     if (!mapReady || !map.current) return;
     const visibility = (visible: boolean) => visible ? "visible" : "none";
-    for (const layer of ["rf-coverage-cells", "rf-coverage-cell-outline"]) {
+    for (const layer of ["rf-coverage-heatmap", "rf-coverage-hit"]) {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showCoverage));
     }
     if (map.current.getLayer("mesh-reachability")) map.current.setLayoutProperty("mesh-reachability", "visibility", visibility(showReachability));
@@ -965,17 +965,20 @@ export default function Home() {
         paint: { "line-color": ["coalesce", ["get", "stroke"], ["get", "color"], "#54e4fb"], "line-width": 0.7, "line-opacity": 0.42 },
       });
       instance.addLayer({
-        id: "rf-coverage-cells", type: "fill", source: "rf-coverage-surface",
+        id: "rf-coverage-heatmap", type: "heatmap", source: "rf-coverage-surface", maxzoom: 14,
         layout: { visibility: "none" },
         paint: {
-          "fill-color": ["interpolate", ["linear"], ["get", "signal_score"], 0, "#ef4444", .3, "#ff7a1a", .55, "#f5d547", .75, "#45e06f", 1, "#54e4fb"],
-          "fill-opacity": ["interpolate", ["linear"], ["get", "display_opacity"], 0, .08, 1, .62],
+          "heatmap-weight": ["get", "weight"],
+          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 5, .55, 12, 1.1],
+          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 22, 12, 50],
+          "heatmap-opacity": .54,
+          "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(0,0,0,0)", .12, "rgba(28,78,255,.14)", .32, "rgba(0,210,255,.32)", .52, "rgba(69,224,111,.44)", .72, "rgba(245,213,71,.58)", .9, "rgba(255,122,26,.68)", 1, "rgba(255,44,44,.75)"],
         },
       });
       instance.addLayer({
-        id: "rf-coverage-cell-outline", type: "line", source: "rf-coverage-surface",
+        id: "rf-coverage-hit", type: "circle", source: "rf-coverage-surface",
         layout: { visibility: "none" },
-        paint: { "line-color": "#d9f7ff", "line-width": .6, "line-opacity": .28 },
+        paint: { "circle-radius": 12, "circle-opacity": 0 },
       });
       instance.addLayer({
         id: "mesh-reachability", type: "line", source: "mesh-reachability",
@@ -1103,20 +1106,18 @@ export default function Home() {
       hoverPopup.current?.remove();
       hoverPopup.current = null;
     });
-    instance.on("mouseenter", "rf-coverage-cells", (event) => {
+    instance.on("mouseenter", "rf-coverage-hit", (event) => {
       instance.getCanvas().style.cursor = "help";
       const feature = event.features?.[0];
       if (!feature) return;
       const p = feature.properties ?? {};
-      const rssi = p.median_rssi == null ? "n/a" : `${p.median_rssi} dBm`;
-      const snr = p.median_snr == null ? "n/a" : `${p.median_snr} dB`;
       hoverPopup.current?.remove();
       hoverPopup.current = new Popup({ closeButton: false, closeOnClick: false, offset: 8, className: "node-hover-popup" })
         .setLngLat(event.lngLat)
-        .setText(`${p.sample_count} samples · ${p.node_count} nodes · ${p.observer_count} observers · median ${rssi} / ${snr} · ${Math.round(Number(p.confidence) * 100)}% support`)
+        .setText(`${p.hops === 0 ? "Direct RF" : `${p.hops} hops`} to ${p.observer_id} · reachability evidence`)
         .addTo(instance);
     });
-    instance.on("mouseleave", "rf-coverage-cells", () => {
+    instance.on("mouseleave", "rf-coverage-hit", () => {
       instance.getCanvas().style.cursor = ""; hoverPopup.current?.remove(); hoverPopup.current = null;
     });
     instance.addControl(new AttributionControl({ compact: true }), "bottom-right");
@@ -1625,7 +1626,7 @@ export default function Home() {
             <summary>MAP LAYERS <Layers3 size={12} /></summary>
             <button className="layer-row" onClick={() => setShowNodes(!showNodes)}><span>Nodes</span><span className={`mini-toggle ${showNodes ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowPrediction(!showPrediction)} disabled={!predictionName}><span>Predicted RF Coverage</span><span className={`mini-toggle ${showPrediction ? "on" : ""}`}><i /></span></button>
-            <button className="layer-row" onClick={() => setShowCoverage(!showCoverage)}><span>Measured RF Evidence</span><span className={`mini-toggle ${showCoverage ? "on" : ""}`}><i /></span></button>
+            <button className="layer-row" onClick={() => setShowCoverage(!showCoverage)}><span>RF Reachability Heatmap</span><span className={`mini-toggle ${showCoverage ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowReachability(!showReachability)}><span>Mesh Reachability</span><span className={`mini-toggle ${showReachability ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowHeatmap(!showHeatmap)}><span>Activity Heatmap</span><span className={`mini-toggle ${showHeatmap ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowLinks(!showLinks)}><span>Live Packet Paths</span><span className={`mini-toggle ${showLinks ? "on" : ""}`}><i /></span></button>
@@ -1662,7 +1663,7 @@ export default function Home() {
             <h3>MAP DOTS AND CLUSTERS</h3>
             <div className="help-copy"><p>Nodes are clustered below zoom level 9. Cluster numbers are actual point counts. At closer zoom, each positioned node becomes a dot. Packet activity temporarily promotes involved endpoints above clustering so the live event remains visible. ATLAS retains the latest valid identity and position, while display-age rules determine whether an inactive node stays on the live map.</p></div>
             <h3>MAP LAYERS</h3>
-            <div className="help-copy"><p><b>Measured RF Evidence</b> uses direct reception samples and is not a terrain prediction. <b>Mesh Reachability</b> uses reported NeighborInfo. <b>Activity Heatmap</b> shows packet concentration, not RF signal coverage. <b>Predicted RF Coverage</b> appears only after importing model GeoJSON and is not treated as measured evidence.</p></div>
+            <div className="help-copy"><p><b>RF Reachability Heatmap</b> shows positioned nodes known to reach registered collectors. Direct reception contributes most; increasing hop counts contribute less. It describes observed mesh reachability at node locations, not continuous RF coverage between endpoints. <b>Mesh Reachability</b> uses reported NeighborInfo. <b>Activity Heatmap</b> shows packet concentration. <b>Predicted RF Coverage</b> appears only after importing model GeoJSON.</p></div>
             <div className="help-caution"><b>WHAT ATLAS DOES NOT CLAIM</b><p>A source and destination do not prove the intervening mesh route. MQTT reception does not prove CHAOS heard RF. NeighborInfo is reported reachability, not a direct collector measurement. Inferred or modeled coverage is never presented as measured RF.</p></div>
             <div className="help-tips"><b>CONTROLS</b><p>Crosshair returns to the regional view. Layers toggles map overlays. Provenance toggles RF, remote-gateway RF, and MQTT filters. The separate legend button explains map colors and line styles. Click clusters to expand, nodes for evidence, and packet activity for packet details.</p></div>
           </section>
@@ -1670,7 +1671,7 @@ export default function Home() {
 
         <div className="map-caption">
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>
-          {showCoverage && <span title="Direct registered ATLAS collectors; hover cells for evidence"><i className="legend-dot measured-dot" /> MEASURED · {coverageSurface?.metadata.cell_count ?? 0} CELLS · {coverageSurface?.metadata.sample_count ?? 0} SAMPLES</span>}
+          {showCoverage && <span title="Positioned nodes reaching registered ATLAS collectors; hop-weighted and inferred"><i className="legend-dot measured-dot" /> RF REACHABILITY · {coverageSurface?.metadata.node_count ?? 0} NODES · {coverageSurface?.metadata.sample_count ?? 0} SAMPLES</span>}
           {showPrediction && predictionName && <span><i className="legend-dot prediction-dot" /> PREDICTED · MODEL</span>}
           {showReachability && <span><i className="legend-dot reachability-dot" /> REACHABILITY · REPORTED</span>}
           {showHeatmap && <span><i className="legend-dot activity-dot" /> ACTIVITY · 24H</span>}

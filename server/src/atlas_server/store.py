@@ -1118,6 +1118,31 @@ class AtlasStore:
                 )
             ]
 
+    def list_reachability_evidence(self, limit: int = 20000) -> list[dict[str, Any]]:
+        """Return RF observations with the sender position known at reception time."""
+        with self.lock:
+            return [
+                dict(row)
+                for row in self.connection.execute(
+                    """
+                SELECT o.event_id, o.observer_id, o.observer_node_num, o.observed_at,
+                       o.rx_rssi, o.rx_snr, o.hop_start, o.hop_limit,
+                       t.packet_id, t.from_node AS transmitter_node,
+                       p.latitude, p.longitude, p.observed_at AS position_observed_at
+                FROM observations o
+                JOIN transmissions t ON t.id=o.transmission_id
+                JOIN positions p ON p.event_id=(
+                    SELECT latest.event_id FROM positions latest
+                    WHERE latest.node_num=t.from_node AND latest.observed_at<=o.observed_at
+                    ORDER BY latest.observed_at DESC LIMIT 1
+                )
+                WHERE o.source='RF_OBSERVED'
+                ORDER BY o.observed_at DESC LIMIT ?
+                """,
+                    (limit,),
+                )
+            ]
+
     def list_neighbor_measurements(self, limit: int = 2000) -> list[dict[str, Any]]:
         with self.lock:
             return [
