@@ -217,26 +217,6 @@ type QualityWarning = {
   observer_id?: string; sender?: number; packet_id?: number;
 };
 
-type CoverageMeasurement = {
-  event_id: string;
-  observer_id: string;
-  transmitter_node: number;
-  receiver_node: number;
-  observed_at: string;
-  latitude: number;
-  longitude: number;
-  receiver_latitude: number | null;
-  receiver_longitude: number | null;
-  position_observed_at: string;
-  rssi: number | null;
-  snr: number | null;
-  distance_km: number | null;
-  age_seconds: number;
-  position_age_seconds: number;
-  evidence: "DIRECT_RF_OBSERVATION" | "NEIGHBORINFO_SNR";
-  confidence: "measured" | "neighbor_report";
-};
-
 type CoverageSurface = {
   type: "FeatureCollection";
   features: Array<{ type: "Feature"; properties: Record<string, number | string | null>; geometry: { type: "Point"; coordinates: number[] } }>;
@@ -348,15 +328,14 @@ function LegendContents() {
     </div>
     <h3>MAP OVERLAYS</h3>
     <div className="help-legend">
-      <span><i className="legend-swatch measured" /><b>RF reachability heatmap</b><small>Areas containing positioned nodes whose packets reached a registered collector. Direct reception is strongest; multi-hop evidence is progressively down-weighted.</small></span>
-      <span><i className="legend-swatch activity" /><b>Activity heatmap</b><small>Packet concentration around recently active positioned nodes.</small></span>
-      <span><i className="legend-line reachability" /><b>Mesh reachability</b><small>Reported NeighborInfo relationship; not a measured coverage field.</small></span>
+      <span><i className="legend-swatch heatmap-lz" /><b>RF reachability heatmap</b><small>Purple → orange → green. Positioned nodes whose packets reached a registered collector; direct reception is weighted strongest and additional hops progressively less.</small></span>
+      <span><i className="legend-swatch heatmap-lz" /><b>Activity heatmap</b><small>Purple → orange → green. Increasing concentration of recent packet activity around positioned nodes.</small></span>
       <span><i className="legend-swatch predicted" /><b>Predicted coverage</b><small>Imported propagation-model output, kept separate from measurements.</small></span>
     </div>
     <h3>MAP CONTROLS</h3>
     <div className="help-legend control-legend">
       <span><i><Crosshair size={15} /></i><b>Regional view</b><small>Frames Joplin, Springfield, and Fayetteville.</small></span>
-      <span><i><Layers3 size={15} /></i><b>Layers</b><small>Opens or closes map overlays such as coverage, reachability, heatmaps, and packet paths.</small></span>
+      <span><i><Layers3 size={15} /></i><b>Layers</b><small>Opens or closes overlays such as RF reachability, activity, predicted coverage, and packet paths.</small></span>
       <span><i><SlidersHorizontal size={15} /></i><b>Provenance</b><small>Opens or closes RF observed, remote-gateway RF, and MQTT visibility filters.</small></span>
       <span><i className="legend-zoom"><Plus size={12} /><Minus size={12} /></i><b>Map zoom</b><small>Changes map scale only; the separate title-bar control changes interface text size.</small></span>
     </div>
@@ -383,7 +362,6 @@ export default function Home() {
   const [selectedActivity, setSelectedActivity] = useState<ActivityEvent | null>(null);
   const [liveNodes, setLiveNodes] = useState<MeshNode[]>([]);
   const [positionHistory, setPositionHistory] = useState<ApiNode[]>([]);
-  const [coverageMeasurements, setCoverageMeasurements] = useState<CoverageMeasurement[]>([]);
   const [coverageSurface, setCoverageSurface] = useState<CoverageSurface | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
@@ -407,7 +385,6 @@ export default function Home() {
   const [showMqtt, setShowMqtt] = useState(true);
   const [showNodes, setShowNodes] = useState(true);
   const [showCoverage, setShowCoverage] = useState(false);
-  const [showReachability, setShowReachability] = useState(false);
   const [showLinks, setShowLinks] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [showPrediction, setShowPrediction] = useState(false);
@@ -629,7 +606,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!showHeatmap && !showCoverage && !showReachability) return;
+    if (!showHeatmap && !showCoverage) return;
     const base = (process.env.NEXT_PUBLIC_ATLAS_API_URL || window.location.origin).replace(/\/$/, "");
     const controller = new AbortController();
     const loadHistorical = async () => {
@@ -639,11 +616,6 @@ export default function Home() {
           fetch(`${base}/api/v1/positions?limit=2000`, { signal: controller.signal })
             .then((response) => response.ok ? response.json() as Promise<ApiNode[]> : Promise.reject())
             .then(setPositionHistory),
-        );
-        if (showCoverage || showReachability) requests.push(
-          fetch(`${base}/api/v1/coverage/measurements?limit=10000&include_neighbors=true`, { signal: controller.signal })
-            .then((response) => response.ok ? response.json() as Promise<CoverageMeasurement[]> : Promise.reject())
-            .then(setCoverageMeasurements),
         );
         if (showCoverage) requests.push(
           fetch(`${base}/api/v1/coverage/reachability-surface?days=30`, { signal: controller.signal })
@@ -658,7 +630,7 @@ export default function Home() {
     void loadHistorical();
     const timer = window.setInterval(() => void loadHistorical(), 60_000);
     return () => { window.clearInterval(timer); controller.abort(); };
-  }, [showCoverage, showHeatmap, showReachability]);
+  }, [showCoverage, showHeatmap]);
 
   useEffect(() => {
     if (!qualityView) return;
@@ -776,27 +748,7 @@ export default function Home() {
     });
     const coverageSource = map.current.getSource("rf-coverage-surface") as GeoJSONSource | undefined;
     if (coverageSource && coverageSurface) coverageSource.setData(coverageSurface as never);
-    const reachabilitySource = map.current.getSource("mesh-reachability") as GeoJSONSource | undefined;
-    if (reachabilitySource) {
-      const newest = new Map<string, CoverageMeasurement>();
-      for (const sample of coverageMeasurements.filter((item) => item.evidence === "NEIGHBORINFO_SNR"
-        && item.receiver_latitude !== null && item.receiver_longitude !== null)) {
-        const key = [sample.transmitter_node, sample.receiver_node].sort((a, b) => a - b).join(":");
-        if (!newest.has(key)) newest.set(key, sample);
-      }
-      reachabilitySource.setData({
-        type: "FeatureCollection",
-        features: [...newest.values()].map((sample) => ({
-          type: "Feature" as const,
-          properties: { evidence: sample.evidence, snr: sample.snr ?? -20, age_seconds: sample.age_seconds },
-          geometry: { type: "LineString" as const, coordinates: [
-            [sample.longitude, sample.latitude],
-            [sample.receiver_longitude!, sample.receiver_latitude!],
-          ] },
-        })),
-      });
-    }
-  }, [mapReady, observerNodes, positionHistory, coverageMeasurements, coverageSurface]);
+  }, [mapReady, observerNodes, positionHistory, coverageSurface]);
 
   useEffect(() => {
     if (!mapReady || !map.current) return;
@@ -804,7 +756,6 @@ export default function Home() {
     for (const layer of ["rf-coverage-heatmap", "rf-coverage-hit"]) {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showCoverage));
     }
-    if (map.current.getLayer("mesh-reachability")) map.current.setLayoutProperty("mesh-reachability", "visibility", visibility(showReachability));
     if (map.current.getLayer("rf-heatmap")) map.current.setLayoutProperty("rf-heatmap", "visibility", visibility(showHeatmap));
     for (const layer of ["terrain-prediction-fill", "terrain-prediction-line"]) {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showPrediction));
@@ -815,7 +766,7 @@ export default function Home() {
     for (const layer of ["recent-rf-links-glow", "recent-rf-links", "recent-rf-links-confirmed", "recent-rf-links-trace", "rf-particles-glow", "rf-particles"]) {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showLinks));
     }
-  }, [mapReady, showCoverage, showHeatmap, showLinks, showNodes, showPrediction, showReachability]);
+  }, [mapReady, showCoverage, showHeatmap, showLinks, showNodes, showPrediction]);
 
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
@@ -881,10 +832,6 @@ export default function Home() {
         data: { type: "FeatureCollection", features: [] },
       });
       instance.addSource("terrain-prediction", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
-      instance.addSource("mesh-reachability", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
       });
@@ -972,21 +919,13 @@ export default function Home() {
           "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 5, .55, 12, 1.1],
           "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 22, 12, 50],
           "heatmap-opacity": .54,
-          "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(0,0,0,0)", .12, "rgba(28,78,255,.14)", .32, "rgba(0,210,255,.32)", .52, "rgba(69,224,111,.44)", .72, "rgba(245,213,71,.58)", .9, "rgba(255,122,26,.68)", 1, "rgba(255,44,44,.75)"],
+          "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(0,0,0,0)", .12, "rgba(165,107,255,.12)", .34, "rgba(165,107,255,.38)", .58, "rgba(255,122,26,.52)", .8, "rgba(255,122,26,.68)", 1, "rgba(69,224,111,.76)"],
         },
       });
       instance.addLayer({
         id: "rf-coverage-hit", type: "circle", source: "rf-coverage-surface",
         layout: { visibility: "none" },
         paint: { "circle-radius": 12, "circle-opacity": 0 },
-      });
-      instance.addLayer({
-        id: "mesh-reachability", type: "line", source: "mesh-reachability",
-        layout: { visibility: "none" },
-        paint: {
-          "line-color": "#a56bff", "line-width": 1.1, "line-opacity": 0.52,
-          "line-dasharray": [1.5, 2.5],
-        },
       });
       instance.addLayer({
         id: "rf-heatmap", type: "heatmap", source: "positioned-node-activity", maxzoom: 13,
@@ -996,7 +935,7 @@ export default function Home() {
           "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 5, 0.65, 11, 1.15],
           "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 24, 11, 54],
           "heatmap-opacity": 0.62,
-          "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(0,0,255,0)", 0.08, "rgba(0,70,255,.28)", 0.2, "rgba(0,210,255,.48)", 0.38, "rgba(0,255,125,.58)", 0.58, "rgba(245,235,40,.7)", 0.78, "rgba(255,122,26,.8)", 1, "rgba(255,25,25,.9)"],
+          "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(0,0,0,0)", .1, "rgba(165,107,255,.14)", .32, "rgba(165,107,255,.4)", .56, "rgba(255,122,26,.54)", .8, "rgba(255,122,26,.7)", 1, "rgba(69,224,111,.8)"],
         },
       });
       instance.addLayer({
@@ -1627,7 +1566,6 @@ export default function Home() {
             <button className="layer-row" onClick={() => setShowNodes(!showNodes)}><span>Nodes</span><span className={`mini-toggle ${showNodes ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowPrediction(!showPrediction)} disabled={!predictionName}><span>Predicted RF Coverage</span><span className={`mini-toggle ${showPrediction ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowCoverage(!showCoverage)}><span>RF Reachability Heatmap</span><span className={`mini-toggle ${showCoverage ? "on" : ""}`}><i /></span></button>
-            <button className="layer-row" onClick={() => setShowReachability(!showReachability)}><span>Mesh Reachability</span><span className={`mini-toggle ${showReachability ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowHeatmap(!showHeatmap)}><span>Activity Heatmap</span><span className={`mini-toggle ${showHeatmap ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowLinks(!showLinks)}><span>Live Packet Paths</span><span className={`mini-toggle ${showLinks ? "on" : ""}`}><i /></span></button>
             <button className="layer-row prediction-import" onClick={() => predictionInput.current?.click()}><span>{predictionName ? `MODEL · ${predictionName}` : "IMPORT SITE PLANNER GEOJSON"}</span><Upload size={13} /></button>
@@ -1663,7 +1601,7 @@ export default function Home() {
             <h3>MAP DOTS AND CLUSTERS</h3>
             <div className="help-copy"><p>Nodes are clustered below zoom level 9. Cluster numbers are actual point counts. At closer zoom, each positioned node becomes a dot. Packet activity temporarily promotes involved endpoints above clustering so the live event remains visible. ATLAS retains the latest valid identity and position, while display-age rules determine whether an inactive node stays on the live map.</p></div>
             <h3>MAP LAYERS</h3>
-            <div className="help-copy"><p><b>RF Reachability Heatmap</b> shows positioned nodes known to reach registered collectors. Direct reception contributes most; increasing hop counts contribute less. It describes observed mesh reachability at node locations, not continuous RF coverage between endpoints. <b>Mesh Reachability</b> uses reported NeighborInfo. <b>Activity Heatmap</b> shows packet concentration. <b>Predicted RF Coverage</b> appears only after importing model GeoJSON.</p></div>
+            <div className="help-copy"><p><b>RF Reachability Heatmap</b> shows positioned nodes known to reach registered collectors. Direct reception contributes most; increasing hop counts contribute less. It describes observed mesh reachability at node locations, not continuous RF coverage between endpoints. <b>Activity Heatmap</b> shows recent packet concentration. Both use the LZ purple-to-orange-to-green scale, from lower to higher intensity. <b>Predicted RF Coverage</b> appears only after importing model GeoJSON.</p></div>
             <div className="help-caution"><b>WHAT ATLAS DOES NOT CLAIM</b><p>A source and destination do not prove the intervening mesh route. MQTT reception does not prove CHAOS heard RF. NeighborInfo is reported reachability, not a direct collector measurement. Inferred or modeled coverage is never presented as measured RF.</p></div>
             <div className="help-tips"><b>CONTROLS</b><p>Crosshair returns to the regional view. Layers toggles map overlays. Provenance toggles RF, remote-gateway RF, and MQTT filters. The separate legend button explains map colors and line styles. Click clusters to expand, nodes for evidence, and packet activity for packet details.</p></div>
           </section>
@@ -1673,7 +1611,6 @@ export default function Home() {
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>
           {showCoverage && <span title="Positioned nodes reaching registered ATLAS collectors; hop-weighted and inferred"><i className="legend-dot measured-dot" /> RF REACHABILITY · {coverageSurface?.metadata.node_count ?? 0} NODES · {coverageSurface?.metadata.sample_count ?? 0} SAMPLES</span>}
           {showPrediction && predictionName && <span><i className="legend-dot prediction-dot" /> PREDICTED · MODEL</span>}
-          {showReachability && <span><i className="legend-dot reachability-dot" /> REACHABILITY · REPORTED</span>}
           {showHeatmap && <span><i className="legend-dot activity-dot" /> ACTIVITY · 24H</span>}
         </div>
 
