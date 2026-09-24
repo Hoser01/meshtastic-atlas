@@ -357,6 +357,7 @@ export default function Home() {
   const hoverPopup = useRef<Popup | null>(null);
   const predictionInput = useRef<HTMLInputElement>(null);
   const layersPanel = useRef<HTMLDetailsElement>(null);
+  const provenancePanel = useRef<HTMLDetailsElement>(null);
   const locationWarningTimer = useRef<number | undefined>(undefined);
   const summaryRefreshAt = useRef(0);
   const healthRefreshAt = useRef(0);
@@ -1470,13 +1471,19 @@ export default function Home() {
   const flyHome = () => {
     map.current?.fitBounds(LZ_REGION_BOUNDS, { padding: 55, duration: 900, maxZoom: 9.2 });
   };
-  const openLayers = () => {
+  const toggleLayers = () => {
     setPanelOpen(true);
-    if (layersPanel.current) layersPanel.current.open = true;
+    if (!layersPanel.current) return;
+    const opening = !layersPanel.current.open;
+    layersPanel.current.open = opening;
+    if (opening && provenancePanel.current) provenancePanel.current.open = false;
   };
-  const openFilters = () => {
+  const toggleProvenance = () => {
     setPanelOpen(true);
-    if (layersPanel.current) layersPanel.current.open = false;
+    if (!provenancePanel.current) return;
+    const opening = !provenancePanel.current.open;
+    provenancePanel.current.open = opening;
+    if (opening && layersPanel.current) layersPanel.current.open = false;
   };
   const adjustUiScale = (change: number) => {
     setUiScale((current) => {
@@ -1601,10 +1608,12 @@ export default function Home() {
         <aside className={`left-panel glass-panel ${panelOpen ? "panel-open" : ""}`}>
           <div className="panel-heading"><span>NETWORK VIEW</span><button className="close-mobile" onClick={() => setPanelOpen(false)}><X size={16} /></button></div>
           <label className="search-box"><Search size={15} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") selectSearchResult(); }} placeholder="Find node or ID…" /><kbd>↵</kbd></label>
-          <div className="filter-label">PROVENANCE · RF WINS DEDUPLICATION</div>
-          <button className={`filter-row provenance-row ${showRf ? "active" : ""}`} onClick={() => setShowRf(!showRf)}><span className="filter-icon rf"><Signal size={14} /></span><span><strong>RF observed</strong><small>Direct ATLAS collector reception</small></span><span className="provenance-count"><b>{nodeSummaries.filter((node) => node.rf_observations > 0).length}</b><small>NODES</small><b>{quality?.rf_unique_packets ?? 0}</b><small>PACKETS</small></span>{showRf ? <Eye size={14} /> : <EyeOff size={14} />}</button>
-          <button className={`filter-row provenance-row ${showRemoteRf ? "active" : ""}`} onClick={() => setShowRemoteRf(!showRemoteRf)}><span className="filter-icon remote-rf"><Radio size={14} /></span><span><strong>Remote gateway RF</strong><small>Trusted gateway report · 24H map life</small></span><span className="provenance-count"><b>{nodeSummaries.filter((node) => node.remote_rf_observations > 0).length}</b><small>NODES</small></span>{showRemoteRf ? <Eye size={14} /> : <EyeOff size={14} />}</button>
-          <button className={`filter-row provenance-row ${showMqtt ? "active" : ""}`} onClick={() => setShowMqtt(!showMqtt)}><span className="filter-icon mqtt"><Zap size={14} /></span><span><strong>MQTT network</strong><small>Broker-forwarded traffic</small></span><span className="provenance-count"><b>{nodeSummaries.filter((node) => node.mqtt_observations > 0).length}</b><small>NODES</small><b>{quality?.mqtt_unique_packets ?? 0}</b><small>PACKETS</small></span>{showMqtt ? <Eye size={14} /> : <EyeOff size={14} />}</button>
+          <details ref={provenancePanel} className="network-controls provenance-controls">
+            <summary>PROVENANCE <SlidersHorizontal size={12} /></summary>
+            <button className={`filter-row provenance-row ${showRf ? "active" : ""}`} onClick={() => setShowRf(!showRf)}><span className="filter-icon rf"><Signal size={14} /></span><span><strong>RF observed</strong><small>Direct ATLAS collector reception</small></span><span className="provenance-count"><b>{nodeSummaries.filter((node) => node.rf_observations > 0).length}</b><small>NODES</small><b>{quality?.rf_unique_packets ?? 0}</b><small>PACKETS</small></span>{showRf ? <Eye size={14} /> : <EyeOff size={14} />}</button>
+            <button className={`filter-row provenance-row ${showRemoteRf ? "active" : ""}`} onClick={() => setShowRemoteRf(!showRemoteRf)}><span className="filter-icon remote-rf"><Radio size={14} /></span><span><strong>Remote gateway RF</strong><small>Trusted gateway report · 24H map life</small></span><span className="provenance-count"><b>{nodeSummaries.filter((node) => node.remote_rf_observations > 0).length}</b><small>NODES</small></span>{showRemoteRf ? <Eye size={14} /> : <EyeOff size={14} />}</button>
+            <button className={`filter-row provenance-row ${showMqtt ? "active" : ""}`} onClick={() => setShowMqtt(!showMqtt)}><span className="filter-icon mqtt"><Zap size={14} /></span><span><strong>MQTT network</strong><small>Broker-forwarded traffic</small></span><span className="provenance-count"><b>{nodeSummaries.filter((node) => node.mqtt_observations > 0).length}</b><small>NODES</small><b>{quality?.mqtt_unique_packets ?? 0}</b><small>PACKETS</small></span>{showMqtt ? <Eye size={14} /> : <EyeOff size={14} />}</button>
+          </details>
           <details ref={layersPanel} className="network-controls">
             <summary>MAP LAYERS <Layers3 size={12} /></summary>
             <button className="layer-row" onClick={() => setShowNodes(!showNodes)}><span>Nodes</span><span className={`mini-toggle ${showNodes ? "on" : ""}`}><i /></span></button>
@@ -1630,11 +1639,11 @@ export default function Home() {
         </aside>
 
         <div className="map-tools">
-          <button onClick={flyHome} title="Frame Joplin, Springfield, and Fayetteville" aria-label="Return to LZMesh regional view"><Crosshair size={17} /></button>
-          <button onClick={openLayers} title="Map layers" aria-label="Open map layers"><Layers3 size={17} /></button>
-          <button onClick={openFilters} title="Map filters" aria-label="Open map filters"><SlidersHorizontal size={17} /></button>
-          <button onClick={() => map.current?.zoomIn({ duration: 300 })} title="Zoom in" aria-label="Zoom in"><Plus size={17} /></button>
-          <button onClick={() => map.current?.zoomOut({ duration: 300 })} title="Zoom out" aria-label="Zoom out"><Minus size={17} /></button>
+          <button onClick={flyHome} title="Regional view" data-tooltip="Regional view" aria-label="Frame Joplin, Springfield, and Fayetteville"><Crosshair size={17} /></button>
+          <button onClick={toggleLayers} title="Layers" data-tooltip="Layers" aria-label="Toggle map layers"><Layers3 size={17} /></button>
+          <button onClick={toggleProvenance} title="Provenance" data-tooltip="Provenance" aria-label="Toggle provenance filters"><SlidersHorizontal size={17} /></button>
+          <button onClick={() => map.current?.zoomIn({ duration: 300 })} title="Zoom in" data-tooltip="Zoom in" aria-label="Zoom in"><Plus size={17} /></button>
+          <button onClick={() => map.current?.zoomOut({ duration: 300 })} title="Zoom out" data-tooltip="Zoom out" aria-label="Zoom out"><Minus size={17} /></button>
         </div>
 
         {helpOpen && <div className="help-backdrop" role="presentation" onClick={() => setHelpOpen(false)}>
@@ -1643,13 +1652,12 @@ export default function Home() {
             <span className="eyebrow">ATLAS OVERVIEW</span>
             <h2 id="atlas-help-title">Live LZMesh radio evidence</h2>
             <p>ATLAS is an evidence map. It separates what an ATLAS collector physically heard, what a trusted remote gateway reports hearing, and what arrived through Meshtastic MQTT. A packet may have several observations; ATLAS correlates them without discarding their individual provenance.</p>
-            <LegendContents />
             <h3>MAP DOTS AND CLUSTERS</h3>
             <div className="help-copy"><p>Nodes are clustered below zoom level 9. Cluster numbers are actual point counts. At closer zoom, each positioned node becomes a dot. Packet activity temporarily promotes involved endpoints above clustering so the live event remains visible. ATLAS retains the latest valid identity and position, while display-age rules determine whether an inactive node stays on the live map.</p></div>
             <h3>MAP LAYERS</h3>
             <div className="help-copy"><p><b>Measured RF Evidence</b> uses direct reception samples and is not a terrain prediction. <b>Mesh Reachability</b> uses reported NeighborInfo. <b>Activity Heatmap</b> shows packet concentration, not RF signal coverage. <b>Predicted RF Coverage</b> appears only after importing model GeoJSON and is not treated as measured evidence.</p></div>
             <div className="help-caution"><b>WHAT ATLAS DOES NOT CLAIM</b><p>A source and destination do not prove the intervening mesh route. MQTT reception does not prove CHAOS heard RF. NeighborInfo is reported reachability, not a direct collector measurement. Inferred or modeled coverage is never presented as measured RF.</p></div>
-            <div className="help-tips"><b>CONTROLS</b><p>Crosshair returns to the regional view. Layers opens map overlays. Filters opens the network panel. Click clusters to expand, nodes for evidence, and packet activity for packet details.</p></div>
+            <div className="help-tips"><b>CONTROLS</b><p>Crosshair returns to the regional view. Layers toggles map overlays. Provenance toggles RF, remote-gateway RF, and MQTT filters. The separate legend button explains map colors and line styles. Click clusters to expand, nodes for evidence, and packet activity for packet details.</p></div>
           </section>
         </div>}
 
