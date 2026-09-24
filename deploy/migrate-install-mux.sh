@@ -99,7 +99,7 @@ trap 'case "$work_dir" in /tmp/atlas-mux-migration.*) rm -rf -- "$work_dir";; es
 git clone --depth 1 --branch "$MUX_REF" "$MUX_REPOSITORY" "$work_dir/mux"
 
 # Install without starting against repository defaults; site values are patched first.
-printf 'n\n' | (cd "$work_dir/mux" && ./install.sh --mode "$mode" --enable-audit)
+printf 'n\n' | (cd "$work_dir/mux" && bash ./install.sh --mode "$mode" --enable-audit)
 python3 - "$APP_DIR/meshtastic_tcp_mux.py" "$upstream_host" "$upstream_port" "$listen_port" <<'PY'
 import ast,re,sys
 from pathlib import Path
