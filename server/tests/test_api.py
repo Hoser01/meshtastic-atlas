@@ -98,6 +98,7 @@ def test_read_api_and_authenticated_ingestion(tmp_path) -> None:
         assert node_detail["last_rf_seen"] == "2026-09-18T13:00:00Z"
         assert node_detail["last_any_seen"] == "2026-09-18T13:00:00Z"
         assert node_detail["recently_heard_by"][0]["observer_id"] == "LZG2"
+        assert node_detail["recently_heard_by"][0]["latest_hops"] == 1
         node_activity = client.get("/api/v1/nodes/100/activity").json()
         assert node_activity[0]["node_direction"] == "sent"
         quality = client.get("/api/v1/quality").json()

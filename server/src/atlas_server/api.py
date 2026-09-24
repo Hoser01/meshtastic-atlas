@@ -72,7 +72,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.23", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.24", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,

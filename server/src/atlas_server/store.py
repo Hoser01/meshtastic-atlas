@@ -1254,6 +1254,11 @@ class AtlasStore:
                        round(avg(o.rx_rssi), 1) AS average_rssi,
                        round(avg(o.rx_snr), 1) AS average_snr,
                        max(o.rx_rssi) AS best_rssi,
+                       (SELECT max(0, coalesce(latest.hop_start, 0) - coalesce(latest.hop_limit, 0))
+                        FROM observations latest
+                        WHERE latest.observer_id=o.observer_id
+                          AND json_extract(latest.raw_event, '$.from_node')=?
+                        ORDER BY latest.observed_at DESC LIMIT 1) AS latest_hops,
                        m.node_id, m.short_name, m.long_name
                 FROM observations o
                 LEFT JOIN node_metadata m ON m.node_num=o.observer_node_num
@@ -1263,7 +1268,7 @@ class AtlasStore:
                 ORDER BY last_observed_at DESC
                 LIMIT 50
                 """,
-                (node_num,),
+                (node_num, node_num),
             )
         return {
             **summary,

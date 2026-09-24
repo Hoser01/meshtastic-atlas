@@ -10,6 +10,7 @@ import {
   Eye,
   EyeOff,
   Layers3,
+  List,
   Menu,
   Minus,
   Pause,
@@ -17,7 +18,6 @@ import {
   Plus,
   Radio,
   Search,
-  Settings2,
   Signal,
   SlidersHorizontal,
   Upload,
@@ -173,6 +173,7 @@ type NodeSummary = {
     observer_id: string; observer_node_num: number | null; last_observed_at: string;
     observation_count: number; average_rssi: number | null; average_snr: number | null;
     best_rssi: number | null; node_id: string | null; short_name: string | null; long_name: string | null;
+    latest_hops: number | null;
   }>;
 };
 
@@ -290,6 +291,39 @@ function StatusPill({ live }: { live: boolean }) {
   );
 }
 
+function LegendContents() {
+  return <div className="legend-contents">
+    <h3>PROVENANCE AND NODE COLORS</h3>
+    <div className="help-legend">
+      <span><i className="legend-swatch rf" /><b>RF observed</b><small>Orange · received directly by an attached ATLAS collector.</small></span>
+      <span><i className="legend-swatch remote" /><b>Remote gateway RF</b><small>Yellow · a trusted MQTT gateway reports a direct LoRa reception.</small></span>
+      <span><i className="legend-swatch mqtt" /><b>MQTT network</b><small>Purple · broker-carried traffic without direct-RF proof at an ATLAS collector.</small></span>
+      <span><i className="legend-swatch green" /><b>Local transmission</b><small>Green · originated or queued by a connected observer radio.</small></span>
+      <span><i className="legend-swatch unknown" /><b>Unknown</b><small>Gray · retained evidence without enough information for stronger provenance.</small></span>
+      <span><i className="legend-cluster rf" /><b>Cluster</b><small>Orange normally; yellow when Remote Gateway RF is the dominant provenance.</small></span>
+    </div>
+    <h3>PACKET PATHS AND ENDPOINTS</h3>
+    <div className="help-legend">
+      <span><i className="legend-line solid rf" /><b>Solid orange</b><small>Confirmed zero-hop transmitter-to-observer RF reception.</small></span>
+      <span><i className="legend-line dashed rf" /><b>Dashed orange</b><small>Logical RF transmitter-to-observer relationship; relay hops are not reconstructed.</small></span>
+      <span><i className="legend-line dashed mqtt" /><b>Dashed purple</b><small>MQTT-carried or MQTT-addressed activity.</small></span>
+      <span><i className="legend-line dashed green" /><b>Dashed green</b><small>Text or locally originated addressed traffic between known endpoints.</small></span>
+      <span><i className="legend-line trace" /><b>Thin blue</b><small>Explicit traceroute segments supplied by the packet.</small></span>
+      <span><i className="legend-packets" /><b>Moving dots</b><small>Live packet bursts that expire after approximately 15 seconds.</small></span>
+      <span><i className="legend-swatch green" /><b>Green endpoint</b><small>Follow Packet sender.</small></span>
+      <span><i className="legend-swatch destination" /><b>Blue endpoint</b><small>Known, positioned destination.</small></span>
+      <span><i className="legend-swatch observer" /><b>Orange endpoint</b><small>Observer with verified RF reception evidence.</small></span>
+    </div>
+    <h3>MAP OVERLAYS</h3>
+    <div className="help-legend">
+      <span><i className="legend-swatch measured" /><b>Measured RF evidence</b><small>Direct receptions weighted by RSSI/SNR, age, position, distance, and observer.</small></span>
+      <span><i className="legend-swatch activity" /><b>Activity heatmap</b><small>Packet concentration around recently active positioned nodes.</small></span>
+      <span><i className="legend-line reachability" /><b>Mesh reachability</b><small>Reported NeighborInfo relationship; not a measured coverage field.</small></span>
+      <span><i className="legend-swatch predicted" /><b>Predicted coverage</b><small>Imported propagation-model output, kept separate from measurements.</small></span>
+    </div>
+  </div>;
+}
+
 export default function Home() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
@@ -343,6 +377,7 @@ export default function Home() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(true);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [legendOpen, setLegendOpen] = useState(false);
   const [uiScale, setUiScale] = useState(1.05);
   const [apiHealthy, setApiHealthy] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
@@ -1480,15 +1515,21 @@ export default function Home() {
         <div className="top-stats">
           <div><strong>{health?.positioned_nodes ?? 0}</strong><span>POSITIONED</span></div>
           <div><strong>{health?.observations ?? 0}</strong><span>OBSERVATIONS</span></div>
-          <div><strong>{health?.observers ?? 0}</strong><span>OBSERVER</span></div>
+          <div><strong>{health?.observers ?? 0}</strong><span>{(health?.observers ?? 0) === 1 ? "OBSERVER" : "OBSERVERS"}</span></div>
         </div>
         <div className="top-actions">
           <span className="single-observer"><Antenna size={13} /> {health?.single_observer_mode ? "SINGLE-OBSERVER MODE" : `${health?.observers ?? 0} OBSERVERS`}</span>
           <div className="text-scale-control" aria-label="Interface text size"><button onClick={() => adjustUiScale(-0.05)} disabled={uiScale <= 0.9} aria-label="Decrease interface size"><Minus size={13} /></button><span>{Math.round(uiScale * 100)}%</span><button onClick={() => adjustUiScale(0.05)} disabled={uiScale >= 1.4} aria-label="Increase interface size"><Plus size={13} /></button></div>
-          <button className="icon-button" aria-label="Help" onClick={() => setHelpOpen(true)}><CircleHelp size={18} /></button>
-          <button className="icon-button" aria-label="Filters and settings" onClick={openFilters}><Settings2 size={18} /></button>
+          <button className="icon-button" aria-label="Help" onClick={() => { setLegendOpen(false); setHelpOpen(true); }}><CircleHelp size={18} /></button>
+          <button className={`icon-button ${legendOpen ? "active" : ""}`} aria-label="Map legend" title="Map legend" onClick={() => setLegendOpen((open) => !open)}><List size={18} /></button>
         </div>
       </header>
+
+      {legendOpen && <aside className="legend-popover glass-panel" aria-label="Map legend">
+        <button className="detail-close" onClick={() => setLegendOpen(false)} aria-label="Close legend"><X size={16} /></button>
+        <span className="eyebrow">MAP LEGEND</span>
+        <LegendContents />
+      </aside>}
 
       <section className="workspace">
         {locationWarning && <div className="location-warning" role="status" aria-live="polite"><Crosshair size={15} /><span>{locationWarning}</span></div>}
@@ -1567,33 +1608,11 @@ export default function Home() {
             <span className="eyebrow">ATLAS OVERVIEW</span>
             <h2 id="atlas-help-title">Live LZMesh radio evidence</h2>
             <p>ATLAS is an evidence map. It separates what an ATLAS collector physically heard, what a trusted remote gateway reports hearing, and what arrived through Meshtastic MQTT. A packet may have several observations; ATLAS correlates them without discarding their individual provenance.</p>
-            <h3>PROVENANCE</h3>
-            <div className="help-legend">
-              <span><i className="legend-swatch rf" /><b>RF observed</b><small>Orange · physically received by a directly connected ATLAS collector such as CHAOS/LZG2.</small></span>
-              <span><i className="legend-swatch remote" /><b>Remote gateway RF</b><small>Yellow · a trusted MQTT gateway reports that it received the packet over LoRa. This is RF evidence at that remote gateway, not at CHAOS.</small></span>
-              <span><i className="legend-swatch mqtt" /><b>MQTT network</b><small>Purple · transported through the broker without sufficient evidence to claim a local RF reception.</small></span>
-              <span><i className="legend-swatch green" /><b>Local transmission</b><small>Green · a connected observer reports that it originated or queued the transmission locally.</small></span>
-            </div>
+            <LegendContents />
             <h3>MAP DOTS AND CLUSTERS</h3>
-            <div className="help-copy"><p>Individual nodes use their evidence color: orange for direct collector RF, yellow for Remote Gateway RF, and purple for MQTT. Cluster circles are orange for ordinary RF/MQTT groups and yellow when Remote Gateway RF is dominant. ATLAS retains each node's latest valid identity and position until newer evidence replaces them, even when live-map age rules hide the node. Packet activity controls brightness; position age remains visible in node evidence.</p></div>
-            <h3>LINES AND MOVING PACKETS</h3>
-            <div className="help-legend">
-              <span><i className="legend-line solid rf" /><b>Solid orange</b><small>Confirmed zero-hop RF reception from the transmitter to the observer.</small></span>
-              <span><i className="legend-line dashed rf" /><b>Dashed orange</b><small>RF observation with a logical transmitter-to-observer relationship; it is not proof of every relay hop.</small></span>
-              <span><i className="legend-line dashed mqtt" /><b>Dashed purple</b><small>MQTT-carried or MQTT-addressed activity. Purple does not claim direct RF at the local observer.</small></span>
-              <span><i className="legend-line dashed green" /><b>Dashed green</b><small>Text or locally originated addressed traffic. It shows known endpoints, not a reconstructed radio route.</small></span>
-              <span><i className="legend-line trace" /><b>Thin blue</b><small>Confirmed traceroute segments when the packet supplies explicit route evidence.</small></span>
-              <span><i className="legend-packets" /><b>Moving dots</b><small>A short live visualization of packet activity. It expires after about 15 seconds and follows the displayed evidence line.</small></span>
-            </div>
-            <h3>FOLLOW PACKET</h3>
-            <div className="help-legend">
-              <span><i className="legend-swatch green" /><b>Green endpoint</b><small>The packet sender.</small></span>
-              <span><i className="legend-swatch destination" /><b>Blue endpoint</b><small>The addressed destination, when known and positioned.</small></span>
-              <span><i className="legend-swatch observer" /><b>Orange endpoint</b><small>An observer with a verified RF reception of the selected packet.</small></span>
-              <span><i className="legend-line solid rf" /><b>Orange connection</b><small>Sender-to-observer reception evidence. ATLAS does not draw an unverified route to the destination.</small></span>
-            </div>
+            <div className="help-copy"><p>Nodes are clustered below zoom level 9. Cluster numbers are actual point counts. At closer zoom, each positioned node becomes a dot. Packet activity temporarily promotes involved endpoints above clustering so the live event remains visible. ATLAS retains the latest valid identity and position, while display-age rules determine whether an inactive node stays on the live map.</p></div>
             <h3>MAP LAYERS</h3>
-            <div className="help-copy"><p><b>Measured RF Evidence</b> uses actual direct reception samples, RSSI, SNR, position, distance, observer, and age. <b>Mesh Reachability</b> uses reported NeighborInfo and is not a measured RF field. <b>Activity Heatmap</b> shows where recently active positioned nodes are concentrated. <b>Predicted RF Coverage</b> is imported model output and remains visually separate from measured evidence.</p></div>
+            <div className="help-copy"><p><b>Measured RF Evidence</b> uses direct reception samples and is not a terrain prediction. <b>Mesh Reachability</b> uses reported NeighborInfo. <b>Activity Heatmap</b> shows packet concentration, not RF signal coverage. <b>Predicted RF Coverage</b> appears only after importing model GeoJSON and is not treated as measured evidence.</p></div>
             <div className="help-caution"><b>WHAT ATLAS DOES NOT CLAIM</b><p>A source and destination do not prove the intervening mesh route. MQTT reception does not prove CHAOS heard RF. NeighborInfo is reported reachability, not a direct collector measurement. Inferred or modeled coverage is never presented as measured RF.</p></div>
             <div className="help-tips"><b>CONTROLS</b><p>Crosshair returns to the regional view. Layers opens map overlays. Filters opens the network panel. Click clusters to expand, nodes for evidence, and packet activity for packet details.</p></div>
           </section>
@@ -1673,7 +1692,7 @@ export default function Home() {
               <div className="node-activity-heading"><span>RECENTLY HEARD BY</span><strong>{selectedNode.recently_heard_by?.length}</strong></div>
               {selectedNode.recently_heard_by?.map((observer) => <div className="heard-by-row" key={`${observer.observer_id}:${observer.observer_node_num ?? ""}`}>
                 <span><strong>{observer.short_name && observer.long_name ? `[${observer.short_name}] ${observer.long_name}` : observer.long_name || observer.short_name || observer.observer_id}</strong><small>{observer.observation_count} direct RF observations · {relativeAge(observer.last_observed_at)} ago</small></span>
-                <em>{observer.average_rssi ?? "—"} dBm<br />{observer.average_snr ?? "—"} dB</em>
+                <em>{observer.average_rssi ?? "—"} dBm<br />{observer.average_snr ?? "—"} dB<br />{observer.latest_hops ?? "—"} hops</em>
               </div>)}
             </div>}
             {selectedActivity && <div className="packet-evidence-card">
