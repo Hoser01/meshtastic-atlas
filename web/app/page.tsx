@@ -33,7 +33,7 @@ import {
   Popup,
   type GeoJSONSource,
 } from "maplibre-gl";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 type Provenance = "RF OBSERVED" | "REMOTE GATEWAY RF" | "MQTT NETWORK" | "LOCAL TX" | "UNKNOWN";
 type ApiProvenance = "RF_OBSERVED" | "REMOTE_GATEWAY_RF" | "MQTT_NETWORK" | "LOCAL_TX" | "UNKNOWN";
@@ -1446,7 +1446,6 @@ export default function Home() {
     setUiScale((current) => {
       const next = Math.min(1.4, Math.max(0.9, Math.round((current + change) * 20) / 20));
       window.localStorage.setItem("atlas-ui-scale", String(next));
-      window.setTimeout(() => map.current?.resize(), 0);
       return next;
     });
   };
@@ -1501,7 +1500,7 @@ export default function Home() {
   };
 
   return (
-    <main className="atlas-shell" style={{ zoom: uiScale, width: `${100 / uiScale}vw`, height: `${100 / uiScale}vh` }}>
+    <main className="atlas-shell" style={{ "--ui-scale": uiScale } as CSSProperties}>
       <header className="topbar">
         <div className="brand-block">
           <button className="icon-button mobile-only" onClick={() => setPanelOpen(!panelOpen)} aria-label="Open navigation"><Menu size={18} /></button>
