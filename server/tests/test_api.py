@@ -115,6 +115,22 @@ def test_read_api_and_authenticated_ingestion(tmp_path) -> None:
         assert client.get("/api/v1/positions?node_num=100").json()[0]["longitude"] == -93.751
 
 
+def test_activity_marks_repeated_packet_at_same_observer(tmp_path) -> None:
+    app = create_app(tmp_path / "atlas.db", ingest_token="secret")
+    with TestClient(app) as client:
+        first = observation("a" * 32)
+        repeated = {**observation("b" * 32), "observed_at": "2026-09-18T13:01:00Z"}
+        for event in (first, repeated):
+            assert client.post(
+                "/api/v1/events", json=event,
+                headers={"X-Atlas-Ingest-Token": "secret"},
+            ).status_code == 202
+        activity = client.get("/api/v1/activity").json()
+        assert activity[0]["event_id"] == "b" * 32
+        assert activity[0]["repeat_observation"] is True
+        assert activity[1]["repeat_observation"] is False
+
+
 def test_configured_observer_position_fills_missing_radio_position(tmp_path, monkeypatch) -> None:
     node_num = 1536181987
     monkeypatch.setenv(

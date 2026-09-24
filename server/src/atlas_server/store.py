@@ -355,6 +355,25 @@ class AtlasStore:
         """Ingest once by event_id. Return False when the event is a duplicate."""
         with self.lock:
             validate_event(event)
+            packet_id = event.get("packet_id")
+            from_node = event.get("from_node")
+            to_node = event.get("to_node")
+            if all(isinstance(value, int) for value in (packet_id, from_node, to_node)):
+                prior = self.connection.execute(
+                    """
+                    SELECT 1 FROM (
+                        SELECT observer_id, raw_event FROM events
+                        UNION ALL
+                        SELECT observer_id, raw_event FROM observations
+                    ) WHERE observer_id=?
+                      AND json_extract(raw_event, '$.packet_id')=?
+                      AND json_extract(raw_event, '$.from_node')=?
+                      AND json_extract(raw_event, '$.to_node')=?
+                    LIMIT 1
+                    """,
+                    (event["observer_id"], packet_id, from_node, to_node),
+                ).fetchone()
+                event["repeat_observation"] = prior is not None
             raw = json.dumps(event, separators=(",", ":"), sort_keys=True)
             if event["event"] == "rf_observation":
                 return self._ingest_observation(event, raw)

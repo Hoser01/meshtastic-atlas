@@ -114,6 +114,7 @@ type ActivityEvent = {
   node_info?: { long_name?: string; short_name?: string; hardware_model?: string; role?: string; is_licensed?: boolean; is_unmessagable?: boolean };
   device_metadata?: { firmware_version?: string; hardware_model?: string; role?: string; has_wifi?: boolean; has_bluetooth?: boolean; has_ethernet?: boolean; has_remote_hardware?: boolean; has_pki?: boolean };
   lifecycle_status?: string;
+  repeat_observation?: boolean;
   want_response?: boolean;
   request_id?: number;
   reply_id?: number;
@@ -1187,6 +1188,7 @@ export default function Home() {
     for (const item of packetEvents) {
       if (item.from_node === undefined) continue;
       if (item.source !== "RF_OBSERVED" && item.source !== "MQTT_NETWORK" && item.source !== "LOCAL_TX") continue;
+      if (item.repeat_observation) continue;
       if (item.source === "MQTT_NETWORK" && !showMqtt) continue;
       if (Date.now() - new Date(item.observed_at).getTime() > 15_000) continue;
       const packetKey = item.packet_id === undefined ? item.event_id : `${item.packet_id}:${item.from_node}:${item.to_node ?? 0}`;
@@ -1203,6 +1205,7 @@ export default function Home() {
         }
       }
       if (item.source === "LOCAL_TX") {
+        if (item.from_node === item.to_node && (item.portnum === "ADMIN_APP" || item.portnum === "ROUTING_APP")) continue;
         if (!from || item.to_node === undefined || item.to_node === 0xffffffff || item.to_node === 0) continue;
         const toId = `!${(item.to_node >>> 0).toString(16).padStart(8, "0")}`;
         const to = byId.get(toId);
@@ -1211,7 +1214,14 @@ export default function Home() {
         features.push({ type: "Feature", properties: { kind, path_style: "logical", observed_at: item.observed_at }, geometry: { type: "LineString", coordinates: [[from.lng, from.lat], [to.lng, to.lat]] } });
         continue;
       }
-      const transportKind = item.source === "MQTT_NETWORK" ? "mqtt" : "reception";
+      if (item.source === "MQTT_NETWORK") {
+        if (!from || item.to_node === undefined || item.to_node === 0xffffffff || item.to_node === 0) continue;
+        const to = nodeFor(item.to_node);
+        if (!to) continue;
+        features.push({ type: "Feature", properties: { kind: "mqtt", path_style: "logical", observed_at: item.observed_at }, geometry: { type: "LineString", coordinates: [[from.lng, from.lat], [to.lng, to.lat]] } });
+        continue;
+      }
+      const transportKind = "reception";
       if (!from) {
         features.push({ type: "Feature", properties: { kind: transportKind, path_style: "logical", observed_at: item.observed_at }, geometry: { type: "LineString", coordinates: [[observer.lng, observer.lat], [observer.lng, observer.lat]] } });
         continue;
@@ -1223,9 +1233,7 @@ export default function Home() {
         const toId = `!${(item.to_node >>> 0).toString(16).padStart(8, "0")}`;
         const to = byId.get(toId);
         if (to) {
-          const addressedKind = item.source === "MQTT_NETWORK"
-            ? "mqtt"
-            : item.source === "RF_OBSERVED" && item.portnum === "TEXT_MESSAGE_APP" ? "rf_text" : "addressed";
+          const addressedKind = item.portnum === "TEXT_MESSAGE_APP" ? "rf_text" : "addressed";
           features.push({ type: "Feature", properties: { kind: addressedKind, path_style: "logical", observed_at: item.observed_at }, geometry: { type: "LineString", coordinates: [[from.lng, from.lat], [to.lng, to.lat]] } });
         }
       }
