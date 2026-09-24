@@ -69,6 +69,39 @@ def test_non_observation_event_is_stored_idempotently(tmp_path) -> None:
         store.close()
 
 
+def test_identical_node_database_snapshots_are_suppressed_until_identity_changes(tmp_path) -> None:
+    store = AtlasStore(tmp_path / "atlas.db")
+    base = {
+        "schema_version": 1,
+        "event": "node_identity",
+        "observer_id": "A",
+        "observer_node_num": 1,
+        "observer_node_id": "!00000001",
+        "source": "NODE_DB",
+        "from_node": 100,
+        "node_info": {"long_name": "Field Node", "short_name": "FLD"},
+    }
+    try:
+        assert store.ingest({**base, "event_id": "1" * 32, "observed_at": "2026-09-18T13:00:00Z"})
+        assert not store.ingest(
+            {**base, "event_id": "2" * 32, "observed_at": "2026-09-18T13:01:00Z"}
+        )
+        assert store.stats()["events"] == 1
+        assert store.get_node_summary(100)["long_name"] == "Field Node"
+
+        changed = {
+            **base,
+            "event_id": "3" * 32,
+            "observed_at": "2026-09-18T13:02:00Z",
+            "node_info": {"long_name": "Field Node Renamed", "short_name": "FLD"},
+        }
+        assert store.ingest(changed)
+        assert store.stats()["events"] == 2
+        assert store.get_node_summary(100)["long_name"] == "Field Node Renamed"
+    finally:
+        store.close()
+
+
 def test_telemetry_history_and_latest_are_retained(tmp_path) -> None:
     store = AtlasStore(tmp_path / "atlas.db")
     try:

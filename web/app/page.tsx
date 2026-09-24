@@ -410,8 +410,8 @@ export default function Home() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [qualityViewLoading, setQualityViewLoading] = useState(false);
   const [locationWarning, setLocationWarning] = useState<string | null>(null);
-  const showLocationWarning = () => {
-    setLocationWarning("LOCATION SET INCORRECTLY · NODE REPORTED 0,0");
+  const showLocationWarning = (message = "LOCATION SET INCORRECTLY · NODE REPORTED 0,0") => {
+    setLocationWarning(message);
     if (locationWarningTimer.current !== undefined) window.clearTimeout(locationWarningTimer.current);
     locationWarningTimer.current = window.setTimeout(() => setLocationWarning(null), 3_500);
   };
@@ -1417,7 +1417,10 @@ export default function Home() {
   }, [displayedNodes, followedPacket, mapReady]);
 
   const focusPosition = (longitude: number | null, latitude: number | null, zoom = 13) => {
-    if (longitude === null || latitude === null) return;
+    if (longitude === null || latitude === null) {
+      showLocationWarning("LOCATION NOT SET · NO POSITION REPORTED");
+      return;
+    }
     if (isInvalidZeroPosition(longitude, latitude)) {
       showLocationWarning();
       return;

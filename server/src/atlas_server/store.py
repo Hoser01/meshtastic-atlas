@@ -68,6 +68,14 @@ ON events(json_extract(raw_event, '$.to_node'), observed_at DESC);
 CREATE INDEX IF NOT EXISTS events_packet_idx
 ON events(json_extract(raw_event, '$.from_node'), json_extract(raw_event, '$.packet_id'));
 
+CREATE TABLE IF NOT EXISTS node_identity_snapshots (
+    observer_id TEXT NOT NULL,
+    node_num INTEGER NOT NULL,
+    identity_json TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    PRIMARY KEY (observer_id, node_num)
+);
+
 CREATE TABLE IF NOT EXISTS positions (
     event_id TEXT PRIMARY KEY,
     node_num INTEGER NOT NULL,
@@ -350,6 +358,39 @@ class AtlasStore:
             raw = json.dumps(event, separators=(",", ":"), sort_keys=True)
             if event["event"] == "rf_observation":
                 return self._ingest_observation(event, raw)
+            if event["event"] == "node_identity" and event.get("source") == "NODE_DB":
+                self._ingest_node_info(event)
+                node_num = event.get("from_node")
+                if isinstance(node_num, int):
+                    identity_json = json.dumps(
+                        {
+                            "node_info": event.get("node_info"),
+                            "device_metadata": event.get("device_metadata"),
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                    previous = self.connection.execute(
+                        """
+                        SELECT identity_json FROM node_identity_snapshots
+                        WHERE observer_id=? AND node_num=?
+                        """,
+                        (event["observer_id"], node_num),
+                    ).fetchone()
+                    self.connection.execute(
+                        """
+                        INSERT INTO node_identity_snapshots
+                            (observer_id, node_num, identity_json, observed_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(observer_id, node_num) DO UPDATE SET
+                            identity_json=excluded.identity_json,
+                            observed_at=excluded.observed_at
+                        """,
+                        (event["observer_id"], node_num, identity_json, event["observed_at"]),
+                    )
+                    if previous is not None and previous["identity_json"] == identity_json:
+                        self.connection.commit()
+                        return False
             cursor = self.connection.execute(
                 "INSERT OR IGNORE INTO events VALUES (?, ?, ?, ?, ?)",
                 (
