@@ -1101,10 +1101,12 @@ class AtlasStore:
                 for row in self.connection.execute(
                     """
                 SELECT r.*,
+                       json_extract(o.raw_event, '$.packet_id') AS packet_id,
                        receiver.latitude AS receiver_latitude,
                        receiver.longitude AS receiver_longitude,
                        receiver.observed_at AS receiver_position_observed_at
                 FROM rf_measurements r
+                LEFT JOIN observations o ON o.event_id=r.event_id
                 LEFT JOIN positions receiver ON receiver.event_id=(
                     SELECT p.event_id FROM positions p
                     WHERE p.node_num=r.receiver_node AND p.observed_at<=r.observed_at

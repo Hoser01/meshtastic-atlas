@@ -237,6 +237,12 @@ type CoverageMeasurement = {
   confidence: "measured" | "neighbor_report";
 };
 
+type CoverageSurface = {
+  type: "FeatureCollection";
+  features: Array<{ type: "Feature"; properties: Record<string, number | string | null>; geometry: { type: "Polygon"; coordinates: number[][][] } }>;
+  metadata: { sample_count: number; cell_count: number; cell_km: number; window_days: number };
+};
+
 type ApiObserver = {
   observer_id: string;
   observer_node_num: number;
@@ -378,6 +384,7 @@ export default function Home() {
   const [liveNodes, setLiveNodes] = useState<MeshNode[]>([]);
   const [positionHistory, setPositionHistory] = useState<ApiNode[]>([]);
   const [coverageMeasurements, setCoverageMeasurements] = useState<CoverageMeasurement[]>([]);
+  const [coverageSurface, setCoverageSurface] = useState<CoverageSurface | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [timelineData, setTimelineData] = useState<TimelineData | null>(null);
@@ -638,6 +645,11 @@ export default function Home() {
             .then((response) => response.ok ? response.json() as Promise<CoverageMeasurement[]> : Promise.reject())
             .then(setCoverageMeasurements),
         );
+        if (showCoverage) requests.push(
+          fetch(`${base}/api/v1/coverage/surface?days=30&cell_km=3`, { signal: controller.signal })
+            .then((response) => response.ok ? response.json() as Promise<CoverageSurface> : Promise.reject())
+            .then(setCoverageSurface),
+        );
         await Promise.all(requests);
       } catch (error) {
         if (!(error instanceof DOMException && error.name === "AbortError")) return;
@@ -762,27 +774,8 @@ export default function Home() {
         geometry: { type: "Point" as const, coordinates: [point.longitude, point.latitude] },
       })),
     });
-    const coverageSource = map.current.getSource("rf-coverage-measurements") as GeoJSONSource | undefined;
-    if (coverageSource) {
-      coverageSource.setData({
-        type: "FeatureCollection",
-        features: coverageMeasurements.filter((sample) => sample.confidence === "measured"
-          && sample.age_seconds <= 30 * 24 * 60 * 60).map((sample) => {
-          const signal = sample.rssi !== null
-            ? Math.max(0.08, Math.min(1, (sample.rssi + 120) / 70))
-            : Math.max(0.05, Math.min(0.42, ((sample.snr ?? -15) + 20) / 60));
-          const recency = Math.max(0.04, 2 ** (-sample.age_seconds / (7 * 24 * 60 * 60)));
-          return ({
-          type: "Feature" as const,
-          properties: {
-            signal, recency, weight: signal * recency,
-            rssi: sample.rssi ?? -120, snr: sample.snr ?? -20,
-            evidence: sample.evidence, distance_km: sample.distance_km ?? 0,
-          },
-          geometry: { type: "Point" as const, coordinates: [sample.longitude, sample.latitude] },
-        }); }),
-      });
-    }
+    const coverageSource = map.current.getSource("rf-coverage-surface") as GeoJSONSource | undefined;
+    if (coverageSource && coverageSurface) coverageSource.setData(coverageSurface as never);
     const reachabilitySource = map.current.getSource("mesh-reachability") as GeoJSONSource | undefined;
     if (reachabilitySource) {
       const newest = new Map<string, CoverageMeasurement>();
@@ -803,15 +796,14 @@ export default function Home() {
         })),
       });
     }
-  }, [mapReady, observerNodes, positionHistory, coverageMeasurements]);
+  }, [mapReady, observerNodes, positionHistory, coverageMeasurements, coverageSurface]);
 
   useEffect(() => {
     if (!mapReady || !map.current) return;
     const visibility = (visible: boolean) => visible ? "visible" : "none";
-    for (const layer of ["rf-coverage-heatmap"]) {
+    for (const layer of ["rf-coverage-cells", "rf-coverage-cell-outline"]) {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showCoverage));
     }
-    if (map.current.getLayer("rf-measurement-points")) map.current.setLayoutProperty("rf-measurement-points", "visibility", visibility(showCoverage));
     if (map.current.getLayer("mesh-reachability")) map.current.setLayoutProperty("mesh-reachability", "visibility", visibility(showReachability));
     if (map.current.getLayer("rf-heatmap")) map.current.setLayoutProperty("rf-heatmap", "visibility", visibility(showHeatmap));
     for (const layer of ["terrain-prediction-fill", "terrain-prediction-line"]) {
@@ -884,7 +876,7 @@ export default function Home() {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
       });
-      instance.addSource("rf-coverage-measurements", {
+      instance.addSource("rf-coverage-surface", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
       });
@@ -973,25 +965,17 @@ export default function Home() {
         paint: { "line-color": ["coalesce", ["get", "stroke"], ["get", "color"], "#54e4fb"], "line-width": 0.7, "line-opacity": 0.42 },
       });
       instance.addLayer({
-        id: "rf-coverage-heatmap", type: "heatmap", source: "rf-coverage-measurements", maxzoom: 14,
+        id: "rf-coverage-cells", type: "fill", source: "rf-coverage-surface",
         layout: { visibility: "none" },
         paint: {
-          "heatmap-weight": ["get", "weight"],
-          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 5, 0.7, 12, 1.35],
-          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 18, 12, 42],
-          "heatmap-opacity": 0.58,
-          "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(0,0,0,0)", 0.08, "rgba(28,78,255,.18)", 0.24, "rgba(0,210,255,.36)", 0.43, "rgba(69,224,111,.48)", 0.64, "rgba(245,213,71,.62)", 0.82, "rgba(255,122,26,.74)", 1, "rgba(255,44,44,.82)"],
+          "fill-color": ["interpolate", ["linear"], ["get", "signal_score"], 0, "#ef4444", .3, "#ff7a1a", .55, "#f5d547", .75, "#45e06f", 1, "#54e4fb"],
+          "fill-opacity": ["interpolate", ["linear"], ["get", "display_opacity"], 0, .08, 1, .62],
         },
       });
       instance.addLayer({
-        id: "rf-measurement-points", type: "circle", source: "rf-coverage-measurements",
+        id: "rf-coverage-cell-outline", type: "line", source: "rf-coverage-surface",
         layout: { visibility: "none" },
-        paint: {
-          "circle-radius": 3,
-          "circle-color": ["interpolate", ["linear"], ["get", "rssi"], -120, "#ef4444", -100, "#ff7a1a", -85, "#f5d547", -70, "#45e06f", -45, "#54e4fb"],
-          "circle-opacity": ["match", ["get", "evidence"], "DIRECT_RF_OBSERVATION", 0.82, 0.35],
-          "circle-stroke-color": "#061014", "circle-stroke-width": 0.75,
-        },
+        paint: { "line-color": "#d9f7ff", "line-width": .6, "line-opacity": .28 },
       });
       instance.addLayer({
         id: "mesh-reachability", type: "line", source: "mesh-reachability",
@@ -1118,6 +1102,22 @@ export default function Home() {
       instance.getCanvas().style.cursor = "";
       hoverPopup.current?.remove();
       hoverPopup.current = null;
+    });
+    instance.on("mouseenter", "rf-coverage-cells", (event) => {
+      instance.getCanvas().style.cursor = "help";
+      const feature = event.features?.[0];
+      if (!feature) return;
+      const p = feature.properties ?? {};
+      const rssi = p.median_rssi == null ? "n/a" : `${p.median_rssi} dBm`;
+      const snr = p.median_snr == null ? "n/a" : `${p.median_snr} dB`;
+      hoverPopup.current?.remove();
+      hoverPopup.current = new Popup({ closeButton: false, closeOnClick: false, offset: 8, className: "node-hover-popup" })
+        .setLngLat(event.lngLat)
+        .setText(`${p.sample_count} samples · ${p.node_count} nodes · ${p.observer_count} observers · median ${rssi} / ${snr} · ${Math.round(Number(p.confidence) * 100)}% support`)
+        .addTo(instance);
+    });
+    instance.on("mouseleave", "rf-coverage-cells", () => {
+      instance.getCanvas().style.cursor = ""; hoverPopup.current?.remove(); hoverPopup.current = null;
     });
     instance.addControl(new AttributionControl({ compact: true }), "bottom-right");
     map.current = instance;
@@ -1670,7 +1670,7 @@ export default function Home() {
 
         <div className="map-caption">
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>
-          {showCoverage && <span title="Direct zero-hop receptions only"><i className="legend-dot measured-dot" /> MEASURED · {coverageMeasurements.filter((item) => item.confidence === "measured").length}</span>}
+          {showCoverage && <span title="Direct registered ATLAS collectors; hover cells for evidence"><i className="legend-dot measured-dot" /> MEASURED · {coverageSurface?.metadata.cell_count ?? 0} CELLS · {coverageSurface?.metadata.sample_count ?? 0} SAMPLES</span>}
           {showPrediction && predictionName && <span><i className="legend-dot prediction-dot" /> PREDICTED · MODEL</span>}
           {showReachability && <span><i className="legend-dot reachability-dot" /> REACHABILITY · REPORTED</span>}
           {showHeatmap && <span><i className="legend-dot activity-dot" /> ACTIVITY · 24H</span>}

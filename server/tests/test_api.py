@@ -253,6 +253,13 @@ def test_measured_coverage_api_includes_distance_and_age(tmp_path, monkeypatch) 
         assert samples[0]["rssi"] == -80
         assert samples[0]["distance_km"] > 1
         assert samples[0]["position_age_seconds"] == 0
+        surface = client.get("/api/v1/coverage/surface?days=30&cell_km=3").json()
+        assert surface["metadata"]["sample_count"] == 1
+        assert surface["metadata"]["cell_count"] == 1
+        cell = surface["features"][0]["properties"]
+        assert cell["median_rssi"] == -80
+        assert cell["observer_count"] == 1
+        assert cell["node_count"] == 1
 
 
 def test_remote_gateway_rf_is_distinct_from_direct_collector_rf(tmp_path) -> None:
@@ -278,6 +285,7 @@ def test_remote_gateway_rf_is_distinct_from_direct_collector_rf(tmp_path) -> Non
         summary = client.get("/api/v1/node-summaries").json()[0]
         assert summary["rf_observations"] == 0
         assert summary["remote_rf_observations"] == 1
+        assert client.get("/api/v1/coverage/surface").json()["features"] == []
         assert summary["display_provenance"] == "REMOTE_GATEWAY_RF"
 
 

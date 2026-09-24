@@ -9,6 +9,7 @@ import math
 import os
 import threading
 import time
+from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -79,7 +80,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.25", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.26", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -394,6 +395,79 @@ def create_app(
                 )
         result.sort(key=lambda item: item["observed_at"], reverse=True)
         return result[:limit]
+
+    @app.get("/api/v1/coverage/surface")
+    def coverage_surface(
+        days: float = Query(30, gt=0, le=90),
+        cell_km: float = Query(3, ge=1, le=20),
+    ) -> dict[str, Any]:
+        """Aggregate direct, registered collector evidence into map cells."""
+        now = datetime.now(timezone.utc)
+        lat_step = cell_km / 111.32
+        buckets: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+        seen: set[tuple[str, int, Any]] = set()
+        for row in store.list_rf_measurements(20000):
+            observer_id = row["observer_id"]
+            if observer_id not in observer_config or observer_id.startswith("MQTT:"):
+                continue
+            observed = datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
+            positioned = datetime.fromisoformat(row["position_observed_at"].replace("Z", "+00:00"))
+            age = max(0.0, (now - observed).total_seconds())
+            if age > days * 86400 or max(0.0, (observed - positioned).total_seconds()) > 86400:
+                continue
+            raw_rssi, raw_snr = row.get("rssi"), row.get("snr")
+            rssi = float(raw_rssi) if isinstance(raw_rssi, (int, float)) and -140 <= raw_rssi <= -20 else None
+            snr = float(raw_snr) if isinstance(raw_snr, (int, float)) and -30 <= raw_snr <= 20 else None
+            if rssi is None and snr is None:
+                continue
+            unique = (observer_id, row["transmitter_node"], row.get("packet_id") or row["event_id"])
+            if unique in seen:
+                continue
+            seen.add(unique)
+            latitude, longitude = float(row["latitude"]), float(row["longitude"])
+            lon_step = cell_km / (111.32 * max(0.2, math.cos(latitude * math.pi / 180)))
+            key = (math.floor(latitude / lat_step), math.floor(longitude / lon_step))
+            buckets[key].append({**row, "rssi": rssi, "snr": snr, "age": age,
+                                 "lat_step": lat_step, "lon_step": lon_step})
+
+        features: list[dict[str, Any]] = []
+        for (lat_index, lon_index), rows in buckets.items():
+            support: dict[tuple[str, int, int], dict[str, Any]] = {}
+            for row in rows:
+                hour = int(datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00")).timestamp() // 3600)
+                key = (row["observer_id"], row["transmitter_node"], hour)
+                if key not in support or row["observed_at"] > support[key]["observed_at"]:
+                    support[key] = row
+            evidence = list(support.values())
+            rssis = sorted(row["rssi"] for row in evidence if row["rssi"] is not None)
+            snrs = sorted(row["snr"] for row in evidence if row["snr"] is not None)
+            median_rssi = rssis[len(rssis) // 2] if rssis else None
+            median_snr = snrs[len(snrs) // 2] if snrs else None
+            signal = ((median_rssi + 120) / 75 if median_rssi is not None else ((median_snr or -20) + 20) / 30)
+            signal = max(0.0, min(1.0, signal))
+            observer_count = len({row["observer_id"] for row in evidence})
+            node_count = len({row["transmitter_node"] for row in evidence})
+            day_count = len({row["observed_at"][:10] for row in evidence})
+            confidence = min(1.0, 0.12 + .12 * min(4, observer_count) + .05 * min(6, node_count)
+                             + .03 * min(5, day_count) + .01 * min(15, len(evidence)))
+            recency = max(.18, 2 ** (-min(row["age"] for row in evidence) / (7 * 86400)))
+            template = evidence[0]
+            south, north = lat_index * template["lat_step"], (lat_index + 1) * template["lat_step"]
+            west, east = lon_index * template["lon_step"], (lon_index + 1) * template["lon_step"]
+            features.append({"type": "Feature", "properties": {
+                "sample_count": len(rows), "support_count": len(evidence),
+                "observer_count": observer_count, "node_count": node_count,
+                "median_rssi": median_rssi, "median_snr": median_snr,
+                "signal_score": round(signal, 3), "confidence": round(confidence, 3),
+                "display_opacity": round(confidence * recency, 3),
+                "latest_observed_at": max(row["observed_at"] for row in evidence),
+            }, "geometry": {"type": "Polygon", "coordinates": [[
+                [west, south], [east, south], [east, north], [west, north], [west, south]
+            ]]}})
+        return {"type": "FeatureCollection", "features": features, "metadata": {
+            "sample_count": sum(len(rows) for rows in buckets.values()), "cell_count": len(features),
+            "cell_km": cell_km, "window_days": days,
+        }}
 
     @app.get("/api/v1/activity")
     def activity(limit: int = Query(100, ge=1, le=1000)) -> list[dict[str, Any]]:
