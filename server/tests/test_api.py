@@ -189,8 +189,13 @@ def test_observer_specific_ingestion_token(tmp_path) -> None:
 def test_file_backed_observer_token_and_health(tmp_path, monkeypatch) -> None:
     tokens = tmp_path / "observer-tokens.json"
     tokens.write_text('{"SITE1":"site-token"}\n', encoding="utf-8")
+    sites = tmp_path / "observer-sites.json"
+    sites.write_text(
+        '{"SITE1":{"short_name":"S1","latitude":37.1,"longitude":-93.2}}\n',
+        encoding="utf-8",
+    )
     monkeypatch.setenv("ATLAS_OBSERVER_TOKENS_FILE", str(tokens))
-    monkeypatch.setenv("ATLAS_OBSERVER_CONFIG", '{"SITE1":{"short_name":"S1"}}')
+    monkeypatch.setenv("ATLAS_OBSERVER_CONFIG_FILE", str(sites))
     heartbeat = {
         "schema_version": 1,
         "event_id": "c" * 32,
@@ -218,6 +223,7 @@ def test_file_backed_observer_token_and_health(tmp_path, monkeypatch) -> None:
         health = client.get("/api/v1/observer-health").json()[0]
         assert health["observer_id"] == "SITE1"
         assert health["short_name"] == "S1"
+        assert health["latitude"] == 37.1
         assert health["mux_frames"] == 42
         assert health["delivery_queue_depth"] == 0
 

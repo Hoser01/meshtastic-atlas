@@ -55,6 +55,13 @@ def create_app(
     store = AtlasStore(database)
     broker = LiveBroker()
     observer_config = json.loads(os.environ.get("ATLAS_OBSERVER_CONFIG", "{}"))
+    observer_config_file = os.environ.get("ATLAS_OBSERVER_CONFIG_FILE")
+    if observer_config_file:
+        with Path(observer_config_file).open(encoding="utf-8") as stream:
+            file_config = json.load(stream)
+        if not isinstance(file_config, dict):
+            raise RuntimeError("observer config file must contain a JSON object")
+        observer_config.update(file_config)
     if observer_tokens is None:
         tokens_file = os.environ.get("ATLAS_OBSERVER_TOKENS_FILE")
         if tokens_file:
