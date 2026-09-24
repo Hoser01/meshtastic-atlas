@@ -30,7 +30,6 @@ import {
   LngLatBounds,
   Marker,
   MercatorCoordinate,
-  NavigationControl,
   Popup,
   type GeoJSONSource,
 } from "maplibre-gl";
@@ -156,6 +155,7 @@ type NodeSummary = {
   altitude: number | null;
   position_observed_at: string | null;
   rf_observations: number;
+  remote_rf_observations: number;
   mqtt_observations: number;
   display_provenance: ApiProvenance;
   firmware_version: string | null;
@@ -356,7 +356,7 @@ export default function Home() {
   };
   useEffect(() => {
     const stored = Number(window.localStorage.getItem("atlas-ui-scale"));
-    if (Number.isFinite(stored) && stored >= 0.9 && stored <= 1.2) setUiScale(stored);
+    if (Number.isFinite(stored) && stored >= 0.9 && stored <= 1.4) setUiScale(stored);
   }, []);
   const observerNodes: MeshNode[] = observers
     .filter((observer) => observer.latitude !== undefined && observer.longitude !== undefined)
@@ -851,7 +851,14 @@ export default function Home() {
       instance.addLayer({
         id: "node-cluster-count", type: "symbol", source: "atlas-nodes", maxzoom: 9,
         filter: ["has", "point_count"],
-        layout: { "text-field": ["get", "point_count_abbreviated"], "text-font": ["Open Sans Regular"], "text-size": 10 },
+        layout: {
+          "text-field": ["get", "point_count_abbreviated"],
+          "text-font": ["Open Sans Regular"],
+          "text-size": 10,
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+          "symbol-sort-key": 100,
+        },
         paint: { "text-color": "#f1eee9" },
       });
       instance.addLayer({
@@ -1040,7 +1047,6 @@ export default function Home() {
       hoverPopup.current?.remove();
       hoverPopup.current = null;
     });
-    instance.addControl(new NavigationControl({ showCompass: false }), "bottom-left");
     instance.addControl(new AttributionControl({ compact: true }), "bottom-right");
     map.current = instance;
     requestAnimationFrame(() => instance.resize());
@@ -1090,7 +1096,7 @@ export default function Home() {
     if (!instance) return;
     markers.current.forEach((marker) => marker.remove());
     markers.current = [];
-    if (!showNodes || mapZoom < 10) return;
+    if (!showNodes) return;
     const normalizedQuery = searchQuery.trim().toLowerCase();
     displayedNodes
       .filter((node) => node.provenance !== "MQTT NETWORK" || showMqtt)
@@ -1114,8 +1120,9 @@ export default function Home() {
             && `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}` === node.id),
         );
         const isActiveObserver = observerNodes.some((observer) => observer.id === node.id) && activeEvents.length > 0;
+        if (mapZoom < 10 && !isEndpoint) return;
         el.className = `mesh-marker ${observerNodes.some((observer) => observer.id === node.id) ? "observer-marker" : ""} ${isRecentlyActive ? "recent-activity" : ""} ${isEndpoint ? "packet-active" : ""}`;
-        el.style.zIndex = isEndpoint ? "30" : isActiveObserver ? "25" : "1";
+        el.style.zIndex = isEndpoint ? "1000" : isActiveObserver ? "100" : "1";
         el.style.setProperty("--marker-color", node.color);
         el.setAttribute("aria-label", `${node.label}, ${node.role}`);
         const core = document.createElement("span");
@@ -1123,7 +1130,8 @@ export default function Home() {
         const label = document.createElement("span");
         label.className = "marker-label";
         label.textContent = node.label;
-        el.append(core, label);
+        el.appendChild(core);
+        el.appendChild(label);
         el.onclick = () => {
           const summary = nodeSummaries.find((item) => `!${(item.node_num >>> 0).toString(16).padStart(8, "0")}` === node.id);
           setSelected(node); setSelectedNode(summary ?? null); setSelectedActivity(null); setDetailOpen(true);
@@ -1344,6 +1352,25 @@ export default function Home() {
     }
   }, [displayedNodes, followedPacket, mapReady]);
 
+  const focusPosition = (longitude: number | null, latitude: number | null, zoom = 13) => {
+    if (longitude === null || latitude === null) return;
+    if (isInvalidZeroPosition(longitude, latitude)) {
+      showLocationWarning();
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      const instance = map.current;
+      if (!instance) return;
+      instance.resize();
+      instance.flyTo({
+        center: [longitude, latitude],
+        zoom: Math.max(instance.getZoom(), zoom),
+        duration: 700,
+        essential: true,
+      });
+    });
+  };
+
   const selectSearchResult = () => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return;
@@ -1355,8 +1382,7 @@ export default function Home() {
     setSelectedNode(summary);
     setSelectedActivity(null);
     setDetailOpen(true);
-    if (match && isInvalidZeroPosition(match.lng, match.lat)) showLocationWarning();
-    else if (match) map.current?.flyTo({ center: [match.lng, match.lat], zoom: Math.max(map.current.getZoom(), 13), duration: 700 });
+    focusPosition(match?.lng ?? summary.longitude, match?.lat ?? summary.latitude);
   };
 
   const selectNodeSummary = (summary: NodeSummary) => {
@@ -1367,8 +1393,7 @@ export default function Home() {
     setSelectedActivity(null);
     setDetailOpen(true);
     setPanelOpen(false);
-    if (mapNode && isInvalidZeroPosition(mapNode.lng, mapNode.lat)) showLocationWarning();
-    else if (mapNode) map.current?.flyTo({ center: [mapNode.lng, mapNode.lat], zoom: Math.max(map.current.getZoom(), 13), duration: 700 });
+    focusPosition(mapNode?.lng ?? summary.longitude, mapNode?.lat ?? summary.latitude);
   };
 
   const flyHome = () => {
@@ -1384,7 +1409,7 @@ export default function Home() {
   };
   const adjustUiScale = (change: number) => {
     setUiScale((current) => {
-      const next = Math.min(1.2, Math.max(0.9, Math.round((current + change) * 20) / 20));
+      const next = Math.min(1.4, Math.max(0.9, Math.round((current + change) * 20) / 20));
       window.localStorage.setItem("atlas-ui-scale", String(next));
       window.setTimeout(() => map.current?.resize(), 0);
       return next;
@@ -1393,7 +1418,7 @@ export default function Home() {
   const importTerrainPrediction = async (file?: File) => {
     if (!file || !map.current) return;
     try {
-      const parsed = JSON.parse(await file.text()) as GeoJSON.GeoJSON;
+      const parsed = JSON.parse(await file.text()) as Parameters<GeoJSONSource["setData"]>[0];
       if (parsed.type !== "FeatureCollection") throw new Error("Expected a GeoJSON FeatureCollection");
       const source = map.current.getSource("terrain-prediction") as GeoJSONSource | undefined;
       source?.setData(parsed);
@@ -1459,7 +1484,7 @@ export default function Home() {
         </div>
         <div className="top-actions">
           <span className="single-observer"><Antenna size={13} /> {health?.single_observer_mode ? "SINGLE-OBSERVER MODE" : `${health?.observers ?? 0} OBSERVERS`}</span>
-          <div className="text-scale-control" aria-label="Interface text size"><button onClick={() => adjustUiScale(-0.05)} disabled={uiScale <= 0.9} aria-label="Decrease interface size"><Minus size={13} /></button><span>{Math.round(uiScale * 100)}%</span><button onClick={() => adjustUiScale(0.05)} disabled={uiScale >= 1.2} aria-label="Increase interface size"><Plus size={13} /></button></div>
+          <div className="text-scale-control" aria-label="Interface text size"><button onClick={() => adjustUiScale(-0.05)} disabled={uiScale <= 0.9} aria-label="Decrease interface size"><Minus size={13} /></button><span>{Math.round(uiScale * 100)}%</span><button onClick={() => adjustUiScale(0.05)} disabled={uiScale >= 1.4} aria-label="Increase interface size"><Plus size={13} /></button></div>
           <button className="icon-button" aria-label="Help" onClick={() => setHelpOpen(true)}><CircleHelp size={18} /></button>
           <button className="icon-button" aria-label="Filters and settings" onClick={openFilters}><Settings2 size={18} /></button>
         </div>
@@ -1532,6 +1557,8 @@ export default function Home() {
           <button onClick={flyHome} title="Frame Joplin, Springfield, and Fayetteville" aria-label="Return to LZMesh regional view"><Crosshair size={17} /></button>
           <button onClick={openLayers} title="Map layers" aria-label="Open map layers"><Layers3 size={17} /></button>
           <button onClick={openFilters} title="Map filters" aria-label="Open map filters"><SlidersHorizontal size={17} /></button>
+          <button onClick={() => map.current?.zoomIn({ duration: 300 })} title="Zoom in" aria-label="Zoom in"><Plus size={17} /></button>
+          <button onClick={() => map.current?.zoomOut({ duration: 300 })} title="Zoom out" aria-label="Zoom out"><Minus size={17} /></button>
         </div>
 
         {helpOpen && <div className="help-backdrop" role="presentation" onClick={() => setHelpOpen(false)}>
@@ -1623,7 +1650,7 @@ export default function Home() {
             </div>
             {selectedNode.position_observed_at && (
               <div className={`position-age ${(selectedPositionAgeMinutes ?? 0) > 60 ? "stale" : ""}`}>
-                <span>POSITION AGE</span>
+                <span><b>POSITION AGE</b>{selectedNode.latitude !== null && selectedNode.longitude !== null && <small>{selectedNode.latitude.toFixed(5)}, {selectedNode.longitude.toFixed(5)}</small>}</span>
                 <strong>{relativeAge(selectedNode.position_observed_at)} AGO</strong>
               </div>
             )}
