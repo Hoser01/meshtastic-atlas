@@ -1,7 +1,7 @@
 "use client";
 
 import { Activity, CircleHelp, Crosshair, Layers3, List, Search, SlidersHorizontal, X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 type HelpSection = "start" | "map" | "how" | "trust" | "fix";
 
@@ -96,24 +96,27 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
             <details><summary>A node shows the wrong place</summary><p>Check Position Age in Node Evidence. ATLAS retains the last valid position until the node reports a newer one. A reported 0,0 is rejected as incorrectly configured.</p></details>
             <details><summary>The mobile screen is crowded</summary><p>Close Node Evidence or Network View when finished. The timeline is intentionally hidden on small screens so it does not cover map controls.</p></details>
           </div>
-          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.19</p>
+          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.20</p>
         </>}
       </div>
     </section>
   </div>;
 }
 
-type TourStep = { target: string; title: string; text: string };
+type TourStep = { target: string; title: string; text: string; opensNode?: boolean };
 const tourSteps: TourStep[] = [
   { target: "[data-tour='topbar']", title: "Status and display", text: "See whether ATLAS is live, check network totals, change text size, and return to Help." },
   { target: "[data-tour='network']", title: "Find and filter nodes", text: "Search by name or ID. The list has one row per known node, ordered by when it was last heard." },
   { target: "[data-tour='map-tools']", title: "Map controls", text: "Reset the regional view, open provenance or layers, and change map zoom." },
   { target: "[data-tour='quality']", title: "Data quality", text: "Open this strip to inspect unique packets, repeats, decrypt success, gateways, errors, and warnings." },
+  { target: "[data-tour='node-evidence']", title: "Node Evidence", text: "ATLAS selected a real positioned node for this example. This panel separates last RF activity from any activity, shows signal readings and position age, keeps known identity and hardware details, lists observers that directly heard it, and provides its recent packet history.", opensNode: true },
   { target: "[data-tour='activity']", title: "Packet activity", text: "Select a recent event to see the packet evidence and follow known endpoints on the map." },
   { target: "[data-tour='timeline']", title: "Recent history", text: "Each bar is one minute. Select a bin to inspect it, or press NOW to return to live activity." },
 ];
 
-export function GuidedTour({ onClose }: { onClose: () => void }) {
+export function GuidedTour({ onClose, onShowNode }: { onClose: () => void; onShowNode: () => void }) {
+  const showNode = useRef(onShowNode);
+  useEffect(() => { showNode.current = onShowNode; }, [onShowNode]);
   const [visibleSteps, setVisibleSteps] = useState<TourStep[]>([]);
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -121,6 +124,7 @@ export function GuidedTour({ onClose }: { onClose: () => void }) {
   // Resolve responsive targets after mount; hidden mobile controls are skipped.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setVisibleSteps(tourSteps.filter((candidate) => {
+    if (candidate.opensNode) return true;
     const element = document.querySelector(candidate.target);
     if (!(element instanceof HTMLElement)) return false;
     const bounds = element.getBoundingClientRect();
@@ -128,8 +132,11 @@ export function GuidedTour({ onClose }: { onClose: () => void }) {
   })), []);
   useEffect(() => {
     if (!step) return;
+    if (step.opensNode) showNode.current();
     const update = () => setRect(document.querySelector(step.target)?.getBoundingClientRect() ?? null);
-    update(); window.addEventListener("resize", update); return () => window.removeEventListener("resize", update);
+    const frame = window.setTimeout(update, step.opensNode ? 450 : 0);
+    window.addEventListener("resize", update);
+    return () => { window.clearTimeout(frame); window.removeEventListener("resize", update); };
   }, [step]);
   if (!step || !rect) return null;
   return <div className="tour-layer" role="dialog" aria-modal="true" aria-label="ATLAS guided tour">

@@ -1449,6 +1449,10 @@ export default function Home() {
       return next;
     });
   };
+  const showTourNodeEvidence = () => {
+    const candidate = nodeSummaries.find((node) => node.positioned && node.latitude !== null && node.longitude !== null && !isInvalidZeroPosition(node.longitude, node.latitude));
+    if (candidate) selectNodeSummary(candidate);
+  };
   const importTerrainPrediction = async (file?: File) => {
     if (!file || !map.current) return;
     try {
@@ -1603,7 +1607,7 @@ export default function Home() {
         </div>
 
         {helpOpen && <HelpCenter onClose={() => setHelpOpen(false)} onStartTour={() => { setHelpOpen(false); setTourOpen(true); }} legend={<LegendContents />} />}
-        {tourOpen && <GuidedTour onClose={() => setTourOpen(false)} />}
+        {tourOpen && <GuidedTour onShowNode={showTourNodeEvidence} onClose={() => { setTourOpen(false); setDetailOpen(false); setSelectedActivity(null); }} />}
 
         <div className="map-caption">
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>
@@ -1640,7 +1644,7 @@ export default function Home() {
         </section>}
 
         {detailOpen && selectedNode && (
-          <section className="node-detail evidence-inspector glass-panel">
+          <section className="node-detail evidence-inspector glass-panel" data-tour="node-evidence">
             <button className="detail-close" onClick={() => setDetailOpen(false)} aria-label="Close details"><X size={16} /></button>
             <span className="eyebrow">NODE EVIDENCE</span>
             <div className="node-title"><div className="node-avatar"><Antenna size={19} /></div><div><h2>{summaryLabel(selectedNode)}</h2><code>!{(selectedNode.node_num >>> 0).toString(16).padStart(8, "0")}</code></div></div>
