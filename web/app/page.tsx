@@ -297,11 +297,11 @@ function summaryToMeshNode(node: NodeSummary): MeshNode | null {
   };
 }
 
-function StatusPill({ live }: { live: boolean }) {
+function StatusPill({ mode, onLive }: { mode: "live" | "replay" | "paused"; onLive: () => void }) {
   return (
-    <span className={`status-pill ${live ? "status-live" : "status-paused"}`}>
-      <span className="status-dot" /> {live ? "LIVE" : "PAUSED"}
-    </span>
+    <button className={`status-pill status-${mode}`} onClick={onLive} title="Return to live activity" aria-label={`${mode === "live" ? "Live" : mode === "replay" ? "Replay" : "Paused"}. Return to live activity`}>
+      <span className="status-dot" /> {mode.toUpperCase()}
+    </button>
   );
 }
 
@@ -500,6 +500,12 @@ export default function Home() {
     });
   }, [activity, selectedTimelineBin, timeline]);
   const animationEvents = replayEvents ?? activity;
+
+  const returnToLive = () => {
+    setSelectedTimelineBin(null);
+    setReplayEvents(null);
+    setLive(true);
+  };
 
   const playTimeline = () => {
     if (selectedTimelineBin === null) {
@@ -1510,7 +1516,7 @@ export default function Home() {
           <button className="icon-button mobile-only" onClick={() => setPanelOpen(!panelOpen)} aria-label="Open navigation"><Menu size={18} /></button>
           <div className="brand-mark"><Radio size={18} strokeWidth={2.3} /></div>
           <div><div className="brand">ATLAS</div><div className="brand-sub">LIVE RF MAP</div></div>
-          <StatusPill live={live} />
+          <StatusPill mode={selectedTimelineBin !== null ? "replay" : live ? "live" : "paused"} onLive={returnToLive} />
           <span className={`demo-pill ${apiHealthy ? "truth-pill" : ""}`}>
             {apiHealthy ? "LIVE VERIFIED DATA" : "DEMO · API OFFLINE"}
           </span>
@@ -1730,7 +1736,7 @@ export default function Home() {
             })}
             <div className="track-fill" />
           </div>
-          <time>{timeline.startLabel}</time><time>{timeline.endLabel}</time><button className="now-button" onClick={() => { setSelectedTimelineBin(null); setReplayEvents(null); setLive(true); }}>NOW</button>
+          <time>{timeline.startLabel}</time><time>{timeline.endLabel}</time><button className="now-button" onClick={returnToLive}>NOW</button>
         </div>
       </section>
     </main>
