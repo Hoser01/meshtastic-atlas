@@ -96,7 +96,7 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
             <details><summary>A node shows the wrong place</summary><p>Check Position Age in Node Evidence. ATLAS retains the last valid position until the node reports a newer one. A reported 0,0 is rejected as incorrectly configured.</p></details>
             <details><summary>The mobile screen is crowded</summary><p>Close Node Evidence or Network View when finished. The timeline is intentionally hidden on small screens so it does not cover map controls.</p></details>
           </div>
-          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.21</p>
+          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.22</p>
         </>}
       </div>
     </section>
