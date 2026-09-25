@@ -99,7 +99,7 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
             <details><summary>A node shows the wrong place</summary><p>Check Position Age in Node Evidence. ATLAS retains the last valid position until the node reports a newer one. A reported 0,0 is rejected as incorrectly configured.</p></details>
             <details><summary>The mobile screen is crowded</summary><p>Close Node Evidence or Network View when finished. The timeline is intentionally hidden on small screens so it does not cover map controls.</p></details>
           </div>
-          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.23</p>
+          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.24</p>
         </>}
       </div>
     </section>
@@ -115,6 +115,7 @@ const tourSteps: TourStep[] = [
   { target: "[data-tour='node-evidence']", title: "Node Evidence", text: "ATLAS selected a real positioned node for this example. This panel separates last RF activity from any activity, shows signal readings and position age, keeps known identity and hardware details, lists observers that directly heard it, and provides its recent packet history.", opensNode: true },
   { target: "[data-tour='activity']", title: "Packet activity", text: "Select a recent event to see the packet evidence and follow known endpoints on the map." },
   { target: "[data-tour='timeline']", title: "Recent history", text: "Each bar is one minute. Selecting a bin changes the top indicator to REPLAY. Press NOW—or click that indicator—to clear the selection and return to live activity." },
+  { target: "[data-tour='footer']", title: "LZMesh links", text: "The LZMesh badge returns to the main community website. The copyright identifies ATLAS as an LZMesh project, and desktop links open the community channels." },
 ];
 
 export function GuidedTour({ onClose, onShowNode }: { onClose: () => void; onShowNode: () => void }) {

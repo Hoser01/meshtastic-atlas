@@ -1739,6 +1739,13 @@ export default function Home() {
           <time>{timeline.startLabel}</time><time>{timeline.endLabel}</time><button className="now-button" onClick={returnToLive}>NOW</button>
         </div>
       </section>
+      <footer className="atlas-footer" data-tour="footer">
+        <a className="atlas-footer-logo" href="https://lzmesh.com/" aria-label="Return to the LZMesh website">
+          <img src="https://lzmesh.com/logos/lzmesh.png" alt="LZMesh — Off-Grid Communication" />
+        </a>
+        <p>© 2026 LZMesh - An <a href="https://lzarc.com/" target="_blank" rel="noopener noreferrer"><span>LZ</span><b>ARC</b></a> project.</p>
+        <nav aria-label="LZMesh community links"><a href="https://discord.lzarc.com" target="_blank" rel="noopener noreferrer">Discord</a><a href="https://www.facebook.com/groups/lzmesh" target="_blank" rel="noopener noreferrer">Facebook</a><a href="https://www.instagram.com/lzmesh_lzarc/" target="_blank" rel="noopener noreferrer">Instagram</a></nav>
+      </footer>
     </main>
   );
 }
