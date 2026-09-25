@@ -14,6 +14,7 @@ const sections: Array<{ id: HelpSection; label: string }> = [
 ];
 
 const faqs = [
+  ["Return to live mode", "Click the status indicator in the title bar or press NOW on the timeline. Either control clears the selected minute and replay packets, then resumes current activity."],
   ["Find a node", "Type its name, short name, or !node ID in Network View. Select the result to open its evidence. If it has a valid retained position, the map moves to it."],
   ["See what one node has been doing", "Select the node on the map or in Network View. Its panel shows identity, position age, recently heard-by evidence, and recent packets."],
   ["Understand a cluster number", "The number is how many positioned nodes are grouped there. Click the cluster to zoom and split it into smaller clusters or individual dots."],
@@ -32,7 +33,7 @@ function Plain({ children }: { children: ReactNode }) {
 
 function AnnotatedMap() {
   return <div className="annotated-map" aria-label="Annotated ATLAS screen layout">
-    <div className="annotated-top"><b>ATLAS</b><i /><i /><span>LIVE</span><em>− &nbsp; + &nbsp; ?</em></div>
+      <div className="annotated-top"><b>ATLAS</b><i /><i /><span>● LIVE</span><em>− &nbsp; + &nbsp; ?</em></div>
     <div className="annotated-body">
       <div className="annotated-network"><small>NETWORK VIEW</small><span><Search size={10} /> Find node…</span><hr /><b>Nodes by last heard</b></div>
       <div className="annotated-controls"><Crosshair size={11} /><SlidersHorizontal size={11} /><Layers3 size={11} /></div>
@@ -67,6 +68,8 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
           <div className="help-copy"><p>ATLAS is a live evidence map for LZMesh. It combines observations from read-only radio collectors and Meshtastic MQTT, then keeps the provenance of every observation.</p><Plain>It shows where nodes are and what the mesh has recently seen—while telling you how ATLAS learned each fact.</Plain></div>
           <h3>THREE THINGS TO TRY</h3>
           <div className="help-cards"><span><Search size={16} /><b>Find a node</b><small>Search by name or !node ID, then select it.</small></span><span><Layers3 size={16} /><b>Choose a layer</b><small>Turn packet paths or either heatmap on and off.</small></span><span><List size={16} /><b>Inspect activity</b><small>Select a recent packet to see its evidence.</small></span></div>
+          <h3>LIVE, REPLAY, AND PAUSED</h3>
+          <div className="help-copy"><p><b>LIVE</b> uses a pulsing red dot with green text. <b>REPLAY</b> is purple and appears whenever a timeline minute is selected. <b>PAUSED</b> is yellow. The status indicator is also a button: click it at any time to clear replay and return to live activity.</p><Plain>Red pulse means you are watching now. Purple means you are looking back. Yellow means updates are paused. Click the label to get back to now.</Plain></div>
           <div className="help-caution"><b>REMEMBER</b><p>ATLAS reports evidence, not certainty it does not possess. Missing animation does not mean missing traffic; an endpoint may simply lack a usable position.</p></div>
         </>}
         {section === "map" && <>
@@ -96,7 +99,7 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
             <details><summary>A node shows the wrong place</summary><p>Check Position Age in Node Evidence. ATLAS retains the last valid position until the node reports a newer one. A reported 0,0 is rejected as incorrectly configured.</p></details>
             <details><summary>The mobile screen is crowded</summary><p>Close Node Evidence or Network View when finished. The timeline is intentionally hidden on small screens so it does not cover map controls.</p></details>
           </div>
-          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.22</p>
+          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.23</p>
         </>}
       </div>
     </section>
@@ -105,13 +108,13 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
 
 type TourStep = { target: string; title: string; text: string; opensNode?: boolean };
 const tourSteps: TourStep[] = [
-  { target: "[data-tour='topbar']", title: "Status and display", text: "See whether ATLAS is live, check network totals, change text size, and return to Help." },
+  { target: "[data-tour='topbar']", title: "Status and display", text: "A pulsing red dot means LIVE, purple means REPLAY, and yellow means PAUSED. Click the status indicator to return to live activity. This bar also shows network totals, text size, Help, and the legend." },
   { target: "[data-tour='network']", title: "Find and filter nodes", text: "Search by name or ID. The list has one row per known node, ordered by when it was last heard." },
   { target: "[data-tour='map-tools']", title: "Map controls", text: "Reset the regional view, open provenance or layers, and change map zoom." },
   { target: "[data-tour='quality']", title: "Data quality", text: "Open this strip to inspect unique packets, repeats, decrypt success, gateways, errors, and warnings." },
   { target: "[data-tour='node-evidence']", title: "Node Evidence", text: "ATLAS selected a real positioned node for this example. This panel separates last RF activity from any activity, shows signal readings and position age, keeps known identity and hardware details, lists observers that directly heard it, and provides its recent packet history.", opensNode: true },
   { target: "[data-tour='activity']", title: "Packet activity", text: "Select a recent event to see the packet evidence and follow known endpoints on the map." },
-  { target: "[data-tour='timeline']", title: "Recent history", text: "Each bar is one minute. Select a bin to inspect it, or press NOW to return to live activity." },
+  { target: "[data-tour='timeline']", title: "Recent history", text: "Each bar is one minute. Selecting a bin changes the top indicator to REPLAY. Press NOW—or click that indicator—to clear the selection and return to live activity." },
 ];
 
 export function GuidedTour({ onClose, onShowNode }: { onClose: () => void; onShowNode: () => void }) {
