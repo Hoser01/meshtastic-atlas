@@ -9,6 +9,7 @@ START2 = 0xC3
 ALT_START2 = 0x93
 HEADER_SIZE = 4
 DEFAULT_MAX_PAYLOAD = 512
+NODELESS_WANT_CONFIG_ID = 69420
 
 
 @dataclass(frozen=True)
@@ -78,3 +79,18 @@ class FrameDecoder:
             if self.buffer[index] == START1 and self.buffer[index + 1] in (START2, ALT_START2):
                 return index
         return -1
+
+
+def frame_payload(payload: bytes) -> bytes:
+    """Wrap a protobuf payload in Meshtastic's TCP/serial framing."""
+    if len(payload) > 65535:
+        raise ValueError("payload is too large for Meshtastic framing")
+    return bytes((START1, START2)) + len(payload).to_bytes(2, "big") + payload
+
+
+def stream_subscription_frame() -> bytes:
+    """Request live events without replaying the radio's stored node database."""
+    from meshtastic.protobuf import mesh_pb2
+
+    request = mesh_pb2.ToRadio(want_config_id=NODELESS_WANT_CONFIG_ID)
+    return frame_payload(request.SerializeToString())

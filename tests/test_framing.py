@@ -1,4 +1,14 @@
-from atlas_muxdiag.framing import ALT_START2, START1, START2, FrameDecoder
+from meshtastic.protobuf import mesh_pb2
+
+from atlas_muxdiag.framing import (
+    ALT_START2,
+    NODELESS_WANT_CONFIG_ID,
+    START1,
+    START2,
+    FrameDecoder,
+    frame_payload,
+    stream_subscription_frame,
+)
 
 
 def framed(payload: bytes, second: int = START2) -> bytes:
@@ -33,3 +43,21 @@ def test_split_start_marker_is_preserved() -> None:
     assert decoder.feed(b"noise" + bytes((START1,))) == []
     frames = decoder.feed(bytes((START2, 0, 1)) + b"x")
     assert [frame.payload for frame in frames] == [b"x"]
+
+
+def test_frame_payload_rejects_oversized_payload() -> None:
+    try:
+        frame_payload(b"x" * 65536)
+    except ValueError as exc:
+        assert "too large" in str(exc)
+    else:
+        raise AssertionError("oversized payload was accepted")
+
+
+def test_stream_subscription_is_nodeless_and_non_transmitting() -> None:
+    frames = FrameDecoder().feed(stream_subscription_frame())
+    assert len(frames) == 1
+    request = mesh_pb2.ToRadio.FromString(frames[0].payload)
+    assert request.WhichOneof("payload_variant") == "want_config_id"
+    assert request.want_config_id == NODELESS_WANT_CONFIG_ID
+    assert not request.HasField("packet")

@@ -19,7 +19,7 @@ from google.protobuf.message import DecodeError
 
 from . import __version__
 from .decode import ProtobufDecoder
-from .framing import Frame, FrameDecoder
+from .framing import Frame, FrameDecoder, stream_subscription_frame
 
 LOG = logging.getLogger("atlas_muxdiag")
 
@@ -119,7 +119,12 @@ class CaptureRunner:
 
     def run(self) -> int:
         backoff = self.config.reconnect_initial
-        self._event("capture_started", version=__version__, read_only=True)
+        self._event(
+            "capture_started",
+            version=__version__,
+            read_only=True,
+            live_stream_subscription=True,
+        )
         try:
             while not self.stop_requested and not self._limits_reached():
                 self.connection_epoch += 1
@@ -152,8 +157,13 @@ class CaptureRunner:
             sock.settimeout(min(cfg.read_timeout, 1.0) if cfg.duration else cfg.read_timeout)
             peer = sock.getpeername()
             self._event("connected", peer=f"{peer[0]}:{peer[1]}")
+            sock.sendall(stream_subscription_frame())
+            self._event("stream_subscription_requested", nodeless=True, mutates_radio=False)
             LOG.info(
-                "connected read-only to %s:%d (epoch %d)", cfg.host, cfg.port, self.connection_epoch
+                "connected read-only to %s:%d and requested live stream (epoch %d)",
+                cfg.host,
+                cfg.port,
+                self.connection_epoch,
             )
             parser = FrameDecoder(cfg.max_payload)
 

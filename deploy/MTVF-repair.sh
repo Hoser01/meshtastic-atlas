@@ -53,7 +53,8 @@ row=next((item for item in rows if item.get("observer_id")==observer),None)
 if not row: raise SystemExit(1)
 if row.get("status")!="online" or not row.get("mux_connected"): raise SystemExit(1)
 if row.get("delivery_queue_depth") not in (0,None): raise SystemExit(1)
-print(f"verified: status={row['"'"'status'"'"']} mux_connected={row['"'"'mux_connected'"'"']} queue={row.get('"'"'delivery_queue_depth'"'"',0)}")
+if int(row.get("mux_frames") or 0) < 1: raise SystemExit(1)
+print(f"verified: status={row['"'"'status'"'"']} mux_connected={row['"'"'mux_connected'"'"']} frames={row['"'"'mux_frames'"'"']} queue={row.get('"'"'delivery_queue_depth'"'"',0)}")
 ' "$OBSERVER_ID"
   then verified=true; break; fi
   sleep 5

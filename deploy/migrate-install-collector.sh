@@ -186,7 +186,8 @@ if not heartbeat: raise SystemExit(1)
 heartbeat_epoch=datetime.datetime.fromisoformat(heartbeat.replace("Z","+00:00")).timestamp()
 if heartbeat_epoch < float(sys.argv[3]): raise SystemExit(1)
 if row.get("status")!="online" or not row.get("mux_connected") or row.get("delivery_queue_depth") not in (0,None): raise SystemExit(1)
-print(f"verified heartbeat: status={row['status']} mux_connected={row['mux_connected']} queue={row.get('delivery_queue_depth',0)}")
+if int(row.get("mux_frames") or 0) < 1: raise SystemExit(1)
+print(f"verified live stream: status={row['status']} mux_connected={row['mux_connected']} frames={row['mux_frames']} queue={row.get('delivery_queue_depth',0)}")
 PY
   then verified=true; break; fi
   sleep 5
