@@ -353,6 +353,7 @@ export default function Home() {
   const layersPanel = useRef<HTMLDetailsElement>(null);
   const provenancePanel = useRef<HTMLDetailsElement>(null);
   const locationWarningTimer = useRef<number | undefined>(undefined);
+  const replayPausedAt = useRef<number | null>(null);
   const summaryRefreshAt = useRef(0);
   const healthRefreshAt = useRef(0);
   const displayedNodesRef = useRef<MeshNode[]>([]);
@@ -502,9 +503,30 @@ export default function Home() {
   const animationEvents = replayEvents ?? activity;
 
   const returnToLive = () => {
+    replayPausedAt.current = null;
     setSelectedTimelineBin(null);
     setReplayEvents(null);
     setLive(true);
+  };
+
+  const startReplay = (events: ActivityEvent[]) => {
+    const startedAt = Date.now();
+    replayPausedAt.current = null;
+    setReplayEvents(events.map((item, index) => ({
+      ...item,
+      observed_at: new Date(startedAt + Math.min(index * 120, 2_000)).toISOString(),
+    })));
+    setLive(true);
+  };
+
+  const selectTimelineBin = (index: number) => {
+    const start = timeline.bins[index]?.start;
+    const events = start === undefined ? [] : activity.filter((item) => {
+      const timestamp = new Date(item.observed_at).getTime();
+      return timestamp >= start && timestamp < start + 60_000;
+    });
+    setSelectedTimelineBin(index);
+    startReplay(events);
   };
 
   const playTimeline = () => {
@@ -512,12 +534,17 @@ export default function Home() {
       setLive(!live);
       return;
     }
-    const startedAt = Date.now();
-    setReplayEvents(selectedTimelineEvents.map((item, index) => ({
+    if (live) {
+      replayPausedAt.current = Date.now();
+      setLive(false);
+      return;
+    }
+    const pausedFor = replayPausedAt.current === null ? 0 : Date.now() - replayPausedAt.current;
+    replayPausedAt.current = null;
+    setReplayEvents((events) => (events ?? selectedTimelineEvents).map((item) => ({
       ...item,
-      observed_at: new Date(startedAt + Math.min(index * 120, 2_000)).toISOString(),
+      observed_at: new Date(new Date(item.observed_at).getTime() + pausedFor).toISOString(),
     })));
-    window.setTimeout(() => setReplayEvents(null), 15_500);
     setLive(true);
   };
 
@@ -1263,6 +1290,7 @@ export default function Home() {
     const patterns = [[1, 4], [2, 3], [3, 2], [4, 1]];
     let frame = 0;
     const timer = window.setInterval(() => {
+      if (replayPausedAt.current !== null) return;
       if (map.current?.getLayer("recent-rf-links")) {
         map.current.setPaintProperty("recent-rf-links", "line-dasharray", patterns[frame % patterns.length]);
         frame += 1;
@@ -1280,7 +1308,7 @@ export default function Home() {
     const packetOffsets = [0, 140, 280];
     const travelMs = 900;
     const animate = () => {
-      const now = Date.now();
+      const now = replayPausedAt.current ?? Date.now();
       const activeLinks = (showLinks ? animationLinks.current : []).filter((link) => {
         const age = now - new Date(link.observedAt).getTime();
         return age >= 0 && age <= lifetimeMs;
@@ -1722,13 +1750,13 @@ export default function Home() {
         )}
 
         <div className="timeline glass-panel" data-tour="timeline">
-          <button className="play-button" onClick={playTimeline} title={selectedTimelineBin === null ? "Pause live updates" : "Replay selected minute"}>{live && selectedTimelineBin === null ? <Pause size={14} /> : <Play size={14} />}</button>
+          <button className="play-button" onClick={playTimeline} title={selectedTimelineBin === null ? (live ? "Pause live updates" : "Resume live updates") : (live ? "Pause replay" : "Resume replay")}>{live ? <Pause size={14} /> : <Play size={14} />}</button>
           <span className="timeline-label">{selectedTimelineBin === null ? "LAST 15 MINUTES" : `${selectedTimelineEvents.length} PACKETS`}</span>
           <div className="track" aria-label="Packet activity during the last 15 minutes">
             {timeline.bins.map((bin, index) => {
               const total = bin.rf + bin.mqtt + bin.other;
               const height = total === 0 ? 0 : Math.max(3, Math.round((total / timeline.peak) * 18));
-              return <button className={`timeline-bin ${selectedTimelineBin === index ? "selected" : ""}`} key={index} title={`${total} packets: ${bin.rf} RF, ${bin.mqtt} MQTT, ${bin.other} other`} onClick={() => { setSelectedTimelineBin(index); setReplayEvents(null); }}>
+              return <button className={`timeline-bin ${selectedTimelineBin === index ? "selected" : ""}`} key={index} title={`${total} packets: ${bin.rf} RF, ${bin.mqtt} MQTT, ${bin.other} other`} onClick={() => selectTimelineBin(index)}>
                 <i className="timeline-other" style={{ height: total ? `${(bin.other / total) * height}px` : 0 }} />
                 <i className="timeline-mqtt" style={{ height: total ? `${(bin.mqtt / total) * height}px` : 0 }} />
                 <i className="timeline-rf" style={{ height: total ? `${(bin.rf / total) * height}px` : 0 }} />

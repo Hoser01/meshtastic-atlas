@@ -14,7 +14,7 @@ const sections: Array<{ id: HelpSection; label: string }> = [
 ];
 
 const faqs = [
-  ["Return to live mode", "Click the status indicator in the title bar or press NOW on the timeline. Either control clears the selected minute and replay packets, then resumes current activity."],
+  ["Replay a timeline minute", "Select any timeline bin and replay starts immediately. The timeline play button pauses and resumes that replay. Click the top REPLAY indicator or press NOW to clear it and return to current activity."],
   ["Find a node", "Type its name, short name, or !node ID in Network View. Select the result to open its evidence. If it has a valid retained position, the map moves to it."],
   ["See what one node has been doing", "Select the node on the map or in Network View. Its panel shows identity, position age, recently heard-by evidence, and recent packets."],
   ["Understand a cluster number", "The number is how many positioned nodes are grouped there. Click the cluster to zoom and split it into smaller clusters or individual dots."],
@@ -99,7 +99,7 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
             <details><summary>A node shows the wrong place</summary><p>Check Position Age in Node Evidence. ATLAS retains the last valid position until the node reports a newer one. A reported 0,0 is rejected as incorrectly configured.</p></details>
             <details><summary>The mobile screen is crowded</summary><p>Close Node Evidence or Network View when finished. The timeline is intentionally hidden on small screens so it does not cover map controls.</p></details>
           </div>
-          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.25</p>
+          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.26</p>
         </>}
       </div>
     </section>
@@ -114,7 +114,7 @@ const tourSteps: TourStep[] = [
   { target: "[data-tour='quality']", title: "Data quality", text: "Open this strip to inspect unique packets, repeats, decrypt success, gateways, errors, and warnings." },
   { target: "[data-tour='node-evidence']", title: "Node Evidence", text: "ATLAS selected a real positioned node for this example. This panel separates last RF activity from any activity, shows signal readings and position age, keeps known identity and hardware details, lists observers that directly heard it, and provides its recent packet history.", opensNode: true },
   { target: "[data-tour='activity']", title: "Packet activity", text: "Select a recent event to see the packet evidence and follow known endpoints on the map." },
-  { target: "[data-tour='timeline']", title: "Recent history", text: "Each bar is one minute. Selecting a bin changes the top indicator to REPLAY. Press NOW—or click that indicator—to clear the selection and return to live activity." },
+  { target: "[data-tour='timeline']", title: "Recent history", text: "Each bar is one minute. Select a bin to start its replay immediately. The play button pauses or resumes it. Press NOW—or click the purple REPLAY indicator—to return to live activity." },
   { target: "[data-tour='footer']", title: "LZMesh links", text: "The LZMesh badge returns to the main community website. The copyright identifies ATLAS as an LZMesh project, and desktop links open the community channels." },
 ];
 
