@@ -34,6 +34,7 @@ import {
   type GeoJSONSource,
 } from "maplibre-gl";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { GuidedTour, HelpCenter } from "../components/atlas-help";
 
 type Provenance = "RF OBSERVED" | "REMOTE GATEWAY RF" | "MQTT NETWORK" | "LOCAL TX" | "UNKNOWN";
 type ApiProvenance = "RF_OBSERVED" | "REMOTE_GATEWAY_RF" | "MQTT_NETWORK" | "LOCAL_TX" | "UNKNOWN";
@@ -396,6 +397,7 @@ export default function Home() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(true);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [tourOpen, setTourOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
   const [uiScale, setUiScale] = useState(1.05);
   const [apiHealthy, setApiHealthy] = useState(false);
@@ -1499,7 +1501,7 @@ export default function Home() {
 
   return (
     <main className="atlas-shell" style={{ "--ui-scale": uiScale } as CSSProperties}>
-      <header className="topbar">
+      <header className="topbar" data-tour="topbar">
         <div className="brand-block">
           <button className="icon-button mobile-only" onClick={() => setPanelOpen(!panelOpen)} aria-label="Open navigation"><Menu size={18} /></button>
           <div className="brand-mark"><Radio size={18} strokeWidth={2.3} /></div>
@@ -1539,7 +1541,7 @@ export default function Home() {
         {mapError && <div className="map-error"><strong>MAP RENDERER OFFLINE</strong><span>{mapError}</span></div>}
         {apiHealthy && !followedPacket && <div className={`animation-status ${drawablePathCount ? "active" : ""}`}><Activity size={12} /> RF LIVE · {animationStatus}</div>}
         {followedPacket && <div className="follow-status"><Crosshair size={12} /><span>FOLLOWING {nodeLabel(followedPacket.sender)} · {followedPacket.packet_id}</span><button onClick={() => setFollowedPacket(null)}><X size={12} /></button></div>}
-        {quality && <details className="quality-dashboard glass-panel">
+        {quality && <details className="quality-dashboard glass-panel" data-tour="quality">
           <summary>
             <span role="button" tabIndex={0} onClick={(event) => { event.preventDefault(); openQualityView("packets"); }}><small>UNIQUE</small><strong>{quality.unique_packets}</strong></span>
             <span role="button" tabIndex={0} onClick={(event) => { event.preventDefault(); openQualityView("packets"); }}><small>REPEATS</small><strong>{quality.repeated_observations}</strong></span>
@@ -1560,7 +1562,7 @@ export default function Home() {
         <div className="map-vignette" />
         <div className="scanline" />
 
-        <aside className={`left-panel glass-panel ${panelOpen ? "panel-open" : ""}`}>
+        <aside className={`left-panel glass-panel ${panelOpen ? "panel-open" : ""}`} data-tour="network">
           <div className="panel-heading"><span>NETWORK VIEW</span><button className="close-mobile" onClick={() => setPanelOpen(false)}><X size={16} /></button></div>
           <label className="search-box"><Search size={15} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") selectSearchResult(); }} placeholder="Find node or ID…" /><kbd>↵</kbd></label>
           <details ref={provenancePanel} className="network-controls provenance-controls">
@@ -1592,7 +1594,7 @@ export default function Home() {
           </div>
         </aside>
 
-        <div className="map-tools">
+        <div className="map-tools" data-tour="map-tools">
           <button onClick={flyHome} title="Regional view" data-tooltip="Regional view" aria-label="Frame Joplin, Springfield, and Fayetteville"><Crosshair size={17} /></button>
           <button onClick={toggleProvenance} title="Provenance filter" data-tooltip="Provenance filter" aria-label="Toggle provenance filters"><SlidersHorizontal size={17} /></button>
           <button onClick={toggleLayers} title="Layers" data-tooltip="Layers" aria-label="Toggle map layers"><Layers3 size={17} /></button>
@@ -1600,20 +1602,8 @@ export default function Home() {
           <button onClick={() => map.current?.zoomOut({ duration: 300 })} title="Zoom out" data-tooltip="Zoom out" aria-label="Zoom out"><Minus size={17} /></button>
         </div>
 
-        {helpOpen && <div className="help-backdrop" role="presentation" onClick={() => setHelpOpen(false)}>
-          <section className="help-dialog glass-panel" role="dialog" aria-modal="true" aria-labelledby="atlas-help-title" onClick={(event) => event.stopPropagation()}>
-            <button className="detail-close" onClick={() => setHelpOpen(false)} aria-label="Close help"><X size={16} /></button>
-            <span className="eyebrow">ATLAS OVERVIEW</span>
-            <h2 id="atlas-help-title">Live LZMesh radio evidence</h2>
-            <p>ATLAS is an evidence map. It separates what an ATLAS collector physically heard, what a trusted remote gateway reports hearing, and what arrived through Meshtastic MQTT. A packet may have several observations; ATLAS correlates them without discarding their individual provenance.</p>
-            <h3>MAP DOTS AND CLUSTERS</h3>
-            <div className="help-copy"><p>Nodes are clustered below zoom level 9. Cluster numbers are actual point counts. At closer zoom, each positioned node becomes a dot. Packet activity temporarily promotes involved endpoints above clustering so the live event remains visible. ATLAS retains the latest valid identity and position, while display-age rules determine whether an inactive node stays on the live map.</p></div>
-            <h3>MAP LAYERS</h3>
-            <div className="help-copy"><p><b>RF Reachability Heatmap</b> shows positioned nodes known to reach registered collectors. Direct reception contributes most; increasing hop counts contribute less. It describes observed mesh reachability at node locations, not continuous RF coverage between endpoints. <b>Activity Heatmap</b> shows recent packet concentration. Both use the LZ purple-to-orange-to-green scale, from lower to higher intensity. <b>Predicted RF Coverage</b> appears only after importing model GeoJSON.</p></div>
-            <div className="help-caution"><b>WHAT ATLAS DOES NOT CLAIM</b><p>A source and destination do not prove the intervening mesh route. MQTT reception does not prove CHAOS heard RF. NeighborInfo is reported reachability, not a direct collector measurement. Inferred or modeled coverage is never presented as measured RF.</p></div>
-            <div className="help-tips"><b>CONTROLS</b><p>Crosshair returns to the regional view. Layers toggles map overlays. Provenance toggles RF, remote-gateway RF, and MQTT filters. The separate legend button explains map colors and line styles. Click clusters to expand, nodes for evidence, and packet activity for packet details.</p></div>
-          </section>
-        </div>}
+        {helpOpen && <HelpCenter onClose={() => setHelpOpen(false)} onStartTour={() => { setHelpOpen(false); setTourOpen(true); }} legend={<LegendContents />} />}
+        {tourOpen && <GuidedTour onClose={() => setTourOpen(false)} />}
 
         <div className="map-caption">
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>
@@ -1721,7 +1711,7 @@ export default function Home() {
           </section>
         )}
 
-        <div className="timeline glass-panel">
+        <div className="timeline glass-panel" data-tour="timeline">
           <button className="play-button" onClick={playTimeline} title={selectedTimelineBin === null ? "Pause live updates" : "Replay selected minute"}>{live && selectedTimelineBin === null ? <Pause size={14} /> : <Play size={14} />}</button>
           <span className="timeline-label">{selectedTimelineBin === null ? "LAST 15 MINUTES" : `${selectedTimelineEvents.length} PACKETS`}</span>
           <div className="track" aria-label="Packet activity during the last 15 minutes">
