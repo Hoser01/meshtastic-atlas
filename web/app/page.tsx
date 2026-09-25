@@ -1555,7 +1555,6 @@ export default function Home() {
           <div><strong>{health?.observers ?? 0}</strong><span>{(health?.observers ?? 0) === 1 ? "OBSERVER" : "OBSERVERS"}</span></div>
         </div>
         <div className="top-actions">
-          <span className="single-observer"><Antenna size={13} /> {health?.single_observer_mode ? "SINGLE-OBSERVER MODE" : `${health?.observers ?? 0} OBSERVERS`}</span>
           <div className="text-scale-control" aria-label="Interface text size"><button onClick={() => adjustUiScale(-0.05)} disabled={uiScale <= 0.9} aria-label="Decrease interface size"><Minus size={13} /></button><span>{Math.round(uiScale * 100)}%</span><button onClick={() => adjustUiScale(0.05)} disabled={uiScale >= 1.4} aria-label="Increase interface size"><Plus size={13} /></button></div>
           <button className="icon-button" aria-label="Help" onClick={() => { setLegendOpen(false); setHelpOpen(true); }}><CircleHelp size={18} /></button>
           <button className={`icon-button ${legendOpen ? "active" : ""}`} aria-label="Map legend" title="Map legend" onClick={() => setLegendOpen((open) => !open)}><List size={18} /></button>
@@ -1585,7 +1584,7 @@ export default function Home() {
             <span role="button" tabIndex={0} onClick={(event) => { event.preventDefault(); openQualityView("packets"); }}><small>REPEATS</small><strong>{quality.repeated_observations}</strong></span>
             <span><small>DECRYPT</small><strong>{quality.decrypt_success_percent}%</strong></span>
             <span role="button" tabIndex={0} onClick={(event) => { event.preventDefault(); openQualityView("gateways"); }}><small>GATEWAYS · 1H</small><strong>{quality.active_gateways_1h}</strong></span>
-            <span role="button" tabIndex={0} onClick={(event) => { event.preventDefault(); openQualityView("warnings"); }} className={quality.collector_errors ? "quality-warning" : ""}><small>ERRORS</small><strong>{quality.collector_errors}</strong></span>
+            <span role="button" tabIndex={0} onClick={(event) => { event.preventDefault(); openQualityView("warnings"); }}><small>WARNINGS</small><strong>{quality.collector_errors}</strong></span>
             <SlidersHorizontal size={13} />
           </summary>
           <div className="quality-detail">

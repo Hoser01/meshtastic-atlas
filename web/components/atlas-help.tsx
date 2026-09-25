@@ -99,7 +99,7 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
             <details><summary>A node shows the wrong place</summary><p>Check Position Age in Node Evidence. ATLAS retains the last valid position until the node reports a newer one. A reported 0,0 is rejected as incorrectly configured.</p></details>
             <details><summary>The mobile screen is crowded</summary><p>Close Node Evidence or Network View when finished. The timeline is intentionally hidden on small screens so it does not cover map controls.</p></details>
           </div>
-          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.26</p>
+          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.27</p>
         </>}
       </div>
     </section>
@@ -111,7 +111,7 @@ const tourSteps: TourStep[] = [
   { target: "[data-tour='topbar']", title: "Status and display", text: "A pulsing red dot means LIVE, purple means REPLAY, and yellow means PAUSED. Click the status indicator to return to live activity. This bar also shows network totals, text size, Help, and the legend." },
   { target: "[data-tour='network']", title: "Find and filter nodes", text: "Search by name or ID. The list has one row per known node, ordered by when it was last heard." },
   { target: "[data-tour='map-tools']", title: "Map controls", text: "Reset the regional view, open provenance or layers, and change map zoom." },
-  { target: "[data-tour='quality']", title: "Data quality", text: "Open this strip to inspect unique packets, repeats, decrypt success, gateways, errors, and warnings." },
+  { target: "[data-tour='quality']", title: "Data quality", text: "Open this strip to inspect unique packets, repeats, decrypt success, gateways, and data warnings." },
   { target: "[data-tour='node-evidence']", title: "Node Evidence", text: "ATLAS selected a real positioned node for this example. This panel separates last RF activity from any activity, shows signal readings and position age, keeps known identity and hardware details, lists observers that directly heard it, and provides its recent packet history.", opensNode: true },
   { target: "[data-tour='activity']", title: "Packet activity", text: "Select a recent event to see the packet evidence and follow known endpoints on the map." },
   { target: "[data-tour='timeline']", title: "Recent history", text: "Each bar is one minute. Select a bin to start its replay immediately. The play button pauses or resumes it. Press NOW—or click the purple REPLAY indicator—to return to live activity." },
