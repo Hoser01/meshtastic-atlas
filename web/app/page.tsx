@@ -116,6 +116,7 @@ type ActivityEvent = {
   device_metadata?: { firmware_version?: string; hardware_model?: string; role?: string; has_wifi?: boolean; has_bluetooth?: boolean; has_ethernet?: boolean; has_remote_hardware?: boolean; has_pki?: boolean };
   lifecycle_status?: string;
   repeat_observation?: boolean;
+  historical_replay?: boolean;
   want_response?: boolean;
   request_id?: number;
   reply_id?: number;
@@ -125,6 +126,24 @@ type ActivityEvent = {
     route_back: number[];
     snr_back: Array<number | null>;
   };
+};
+
+const activityNodeNumbers = (item: ActivityEvent): number[] => {
+  if (item.historical_replay) return [];
+  if (
+    item.source === "LOCAL_TX"
+    && item.from_node === item.to_node
+    && (item.portnum === "ADMIN_APP" || item.portnum === "ROUTING_APP")
+  ) return [];
+  const nodes = [item.from_node, item.to_node].filter(
+    (value): value is number => value !== undefined && value !== 0 && value !== 0xffffffff,
+  );
+  // An RF collector is a real reception endpoint. An MQTT gateway merely delivered the
+  // broker packet to ATLAS and must not glow as though every MQTT sender reached it by RF.
+  if (item.source === "RF_OBSERVED" && item.observer_node_num !== undefined) {
+    nodes.push(item.observer_node_num);
+  }
+  return [...new Set(nodes)];
 };
 
 type TimelineData = {
@@ -1115,8 +1134,7 @@ export default function Home() {
     for (const item of activity) {
       if (item.source !== "RF_OBSERVED" && item.source !== "MQTT_NETWORK" && item.source !== "LOCAL_TX") continue;
       const timestamp = new Date(item.observed_at).getTime();
-      for (const nodeNum of [item.from_node, item.to_node, item.observer_node_num]) {
-        if (nodeNum === undefined) continue;
+      for (const nodeNum of activityNodeNumbers(item)) {
         const id = `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}`;
         latestActivity.set(id, Math.max(timestamp, latestActivity.get(id) ?? 0));
       }
@@ -1158,14 +1176,14 @@ export default function Home() {
           && Date.now() - new Date(item.observed_at).getTime() < 15_000,
         );
         const isEndpoint = activeEvents.some((item) =>
-          [item.from_node, item.to_node, item.observer_node_num].some((nodeNum) => nodeNum !== undefined
-            && `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}` === node.id),
+          activityNodeNumbers(item).some((nodeNum) =>
+            `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}` === node.id),
         );
         const isRecentlyActive = activity.some((item) =>
           (item.source === "RF_OBSERVED" || item.source === "MQTT_NETWORK" || item.source === "LOCAL_TX")
           && Date.now() - new Date(item.observed_at).getTime() < 15 * 60_000
-          && [item.from_node, item.to_node, item.observer_node_num].some((nodeNum) => nodeNum !== undefined
-            && `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}` === node.id),
+          && activityNodeNumbers(item).some((nodeNum) =>
+            `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}` === node.id),
         );
         const isActiveObserver = observerNodes.some((observer) => observer.id === node.id) && activeEvents.length > 0;
         if (mapZoom < 10 && !isEndpoint) return;

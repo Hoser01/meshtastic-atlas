@@ -131,6 +131,40 @@ def test_telemetry_history_and_latest_are_retained(tmp_path) -> None:
         store.close()
 
 
+def test_stale_mqtt_payload_is_archived_but_not_presented_as_live_state(tmp_path) -> None:
+    store = AtlasStore(tmp_path / "atlas.db")
+    stale = {
+        "schema_version": 1,
+        "event_id": "9" * 32,
+        "event": "network_packet",
+        "observer_id": "PZG2",
+        "observer_node_num": 710967218,
+        "observer_node_id": "!2a607fb2",
+        "observed_at": "2026-09-29T12:00:00Z",
+        "source": "MQTT_NETWORK",
+        "via_mqtt": True,
+        "packet_id": 99,
+        "from_node": 100,
+        "to_node": 0xFFFFFFFF,
+        "portnum": "POSITION_APP",
+        "position": {
+            "latitude": 37.1,
+            "longitude": -93.2,
+            "timestamp": 1_790_679_600,
+        },
+    }
+    try:
+        assert store.ingest(stale)
+        archived = store.list_node_activity(100)[0]
+        assert archived["historical_replay"] is True
+        assert archived["payload_age_seconds"] == 3_600
+        assert store.list_activity() == []
+        assert store.list_positions(node_num=100) == []
+        assert store.get_node_summary(100) is None
+    finally:
+        store.close()
+
+
 def test_observer_health_counts_only_connection_errors_from_last_24_hours(tmp_path) -> None:
     store = AtlasStore(tmp_path / "atlas.db")
     now = datetime.now(timezone.utc)

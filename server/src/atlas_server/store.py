@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+MQTT_REPLAY_MAX_AGE_SECONDS = 10 * 60
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -355,6 +357,7 @@ class AtlasStore:
         """Ingest once by event_id. Return False when the event is a duplicate."""
         with self.lock:
             validate_event(event)
+            self._mark_historical_mqtt_replay(event)
             packet_id = event.get("packet_id")
             from_node = event.get("from_node")
             to_node = event.get("to_node")
@@ -420,7 +423,9 @@ class AtlasStore:
                     raw,
                 ),
             )
-            if cursor.rowcount == 1:
+            # Preserve replayed broker evidence in the lossless archive, but do not let an old
+            # retained payload masquerade as live traffic or replace current node state.
+            if cursor.rowcount == 1 and not event.get("historical_replay"):
                 self._ingest_position(event)
                 self._ingest_telemetry(event)
                 self._ingest_node_info(event)
@@ -429,6 +434,31 @@ class AtlasStore:
                 self._ingest_node_summary(event)
             self.connection.commit()
             return cursor.rowcount == 1
+
+    @staticmethod
+    def _mark_historical_mqtt_replay(event: dict[str, Any]) -> None:
+        """Flag retained MQTT payloads whose embedded clock predates their arrival."""
+        if event.get("source") != "MQTT_NETWORK" and not event.get("via_mqtt"):
+            return
+        embedded_timestamp: int | float | None = None
+        position = event.get("position")
+        telemetry = event.get("telemetry")
+        if isinstance(position, dict):
+            embedded_timestamp = position.get("timestamp")
+        elif isinstance(telemetry, dict):
+            embedded_timestamp = telemetry.get("time")
+        # Ignore unset clocks and uptime-like values; only compare plausible Unix timestamps.
+        if not isinstance(embedded_timestamp, (int, float)) or embedded_timestamp < 946_684_800:
+            return
+        observed = datetime.fromisoformat(str(event["observed_at"]).replace("Z", "+00:00"))
+        age_seconds = observed.timestamp() - float(embedded_timestamp)
+        if age_seconds <= MQTT_REPLAY_MAX_AGE_SECONDS:
+            return
+        event["historical_replay"] = True
+        event["payload_age_seconds"] = round(age_seconds, 3)
+        evidence = event.setdefault("evidence", [])
+        if isinstance(evidence, list):
+            evidence.append("embedded payload time predates MQTT arrival; retained replay")
 
     def _ingest_lifecycle(self, event: dict[str, Any]) -> None:
         status = event.get("lifecycle_status")
@@ -900,6 +930,7 @@ class AtlasStore:
                 """
                 SELECT observed_at, raw_event FROM (
                     SELECT observed_at, raw_event FROM events
+                    WHERE coalesce(json_extract(raw_event, '$.historical_replay'), 0)=0
                     UNION ALL
                     SELECT observed_at, raw_event FROM observations
                 ) ORDER BY observed_at DESC LIMIT ?
@@ -921,6 +952,7 @@ class AtlasStore:
                     SELECT strftime('%Y-%m-%dT%H:%M:00Z', observed_at) AS minute,
                            json_extract(raw_event, '$.source') AS source
                     FROM events WHERE observed_at>=?
+                      AND coalesce(json_extract(raw_event, '$.historical_replay'), 0)=0
                     UNION ALL
                     SELECT strftime('%Y-%m-%dT%H:%M:00Z', observed_at) AS minute,
                            source
