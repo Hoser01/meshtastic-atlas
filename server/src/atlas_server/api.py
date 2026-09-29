@@ -265,6 +265,7 @@ def create_app(
                 "position_source": row.get("position_source", "PACKET"),
                 "src_rf": bool(row.get("rf_observations")),
                 "src_mqtt": bool(row.get("mqtt_observations")),
+                "last_source": row.get("display_provenance"),
                 "observer_id": row.get("latest_rf_observer_id"),
                 "rf_observed_at": row.get("latest_rf_observed_at"),
                 "telemetry": legacy_telemetry,
