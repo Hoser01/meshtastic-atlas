@@ -11,6 +11,7 @@ import {
   EyeOff,
   Layers3,
   List,
+  LoaderCircle,
   Menu,
   Minus,
   Pause,
@@ -1636,9 +1637,14 @@ export default function Home() {
             <button className="layer-row prediction-import" onClick={() => predictionInput.current?.click()}><span>{predictionName ? `MODEL · ${predictionName}` : "IMPORT SITE PLANNER GEOJSON"}</span><Upload size={13} /></button>
             <input ref={predictionInput} type="file" accept=".geojson,.json,application/geo+json,application/json" hidden onChange={(event) => void importTerrainPrediction(event.target.files?.[0])} />
           </details>
-          <div className="node-list-summary"><span>{filteredNodeSummaries.length} NODES</span><span>LAST HEARD</span></div>
+          <div className="node-list-summary"><span>{initialLoading ? "LOADING NODES" : `${filteredNodeSummaries.length} NODES`}</span><span>{initialLoading ? "PLEASE WAIT" : "LAST HEARD"}</span></div>
           <div className="network-node-list">
-            {filteredNodeSummaries.map((node) => {
+            {initialLoading && <div className="network-list-loader" role="status" aria-live="polite">
+              <LoaderCircle size={22} aria-hidden="true" />
+              <strong>LOADING NETWORK DATA…</strong>
+              <small>Synchronizing nodes and recent activity</small>
+            </div>}
+            {!initialLoading && filteredNodeSummaries.map((node) => {
               const id = `!${(node.node_num >>> 0).toString(16).padStart(8, "0")}`;
               return <button key={node.node_num} className={`network-node-row ${selectedNode?.node_num === node.node_num ? "selected" : ""}`} onClick={() => selectNodeSummary(node)}>
                 <i className={`node-source ${node.display_provenance === "RF_OBSERVED" ? "rf" : node.display_provenance === "REMOTE_GATEWAY_RF" ? "remote-rf" : node.display_provenance === "MQTT_NETWORK" ? "mqtt" : "other"}`} />
