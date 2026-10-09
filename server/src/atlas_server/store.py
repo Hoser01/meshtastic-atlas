@@ -194,7 +194,12 @@ CREATE TABLE IF NOT EXISTS node_summaries (
     last_snr REAL,
     last_packet_seen TEXT,
     sent_observations INTEGER NOT NULL DEFAULT 0,
-    received_observations INTEGER NOT NULL DEFAULT 0
+    received_observations INTEGER NOT NULL DEFAULT 0,
+    rf_observations INTEGER NOT NULL DEFAULT 0,
+    remote_rf_observations INTEGER NOT NULL DEFAULT 0,
+    mqtt_observations INTEGER NOT NULL DEFAULT 0,
+    latest_rf_observer_id TEXT,
+    latest_rf_observed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS node_summaries_last_heard_idx
 ON node_summaries(last_heard DESC);
@@ -262,10 +267,20 @@ class AtlasStore:
         existing = {
             row["name"] for row in self.connection.execute("PRAGMA table_info(node_summaries)")
         }
-        added = "last_packet_seen" not in existing
-        if added:
-            self.connection.execute("ALTER TABLE node_summaries ADD COLUMN last_packet_seen TEXT")
-        needs_backfill = added or (
+        additions = {
+            "last_packet_seen": "TEXT",
+            "rf_observations": "INTEGER NOT NULL DEFAULT 0",
+            "remote_rf_observations": "INTEGER NOT NULL DEFAULT 0",
+            "mqtt_observations": "INTEGER NOT NULL DEFAULT 0",
+            "latest_rf_observer_id": "TEXT",
+            "latest_rf_observed_at": "TEXT",
+        }
+        added_columns = {column for column in additions if column not in existing}
+        for column in added_columns:
+            self.connection.execute(
+                f"ALTER TABLE node_summaries ADD COLUMN {column} {additions[column]}"
+            )
+        needs_backfill = "last_packet_seen" in added_columns or (
             self.connection.execute("SELECT count(*) FROM node_summaries").fetchone()[0] > 0
             and self.connection.execute(
                 "SELECT count(*) FROM node_summaries WHERE last_packet_seen IS NOT NULL"
@@ -301,6 +316,57 @@ class AtlasStore:
                     WHERE atlas_packet_activity.node_num=node_summaries.node_num
                 );
                 DROP TABLE atlas_packet_activity;
+                """
+            )
+        if added_columns & {
+            "rf_observations",
+            "remote_rf_observations",
+            "mqtt_observations",
+            "latest_rf_observer_id",
+            "latest_rf_observed_at",
+        }:
+            self.connection.executescript(
+                """
+                CREATE TEMP TABLE atlas_source_counts AS
+                SELECT node_num,
+                       sum(CASE WHEN source='RF_OBSERVED' AND observer_id NOT LIKE 'MQTT:%'
+                           THEN 1 ELSE 0 END) AS rf_observations,
+                       sum(CASE WHEN source='RF_OBSERVED' AND observer_id LIKE 'MQTT:%'
+                           THEN 1 ELSE 0 END) AS remote_rf_observations,
+                       sum(CASE WHEN source='MQTT_NETWORK' THEN 1 ELSE 0 END)
+                           AS mqtt_observations
+                FROM (
+                    SELECT json_extract(raw_event, '$.from_node') AS node_num,
+                           source, observer_id FROM observations
+                    UNION ALL
+                    SELECT json_extract(raw_event, '$.from_node'),
+                           json_extract(raw_event, '$.source'), observer_id FROM events
+                ) WHERE node_num IS NOT NULL GROUP BY node_num;
+                CREATE INDEX atlas_source_counts_node_idx ON atlas_source_counts(node_num);
+                UPDATE node_summaries SET
+                    rf_observations=coalesce((SELECT rf_observations FROM atlas_source_counts
+                        WHERE node_num=node_summaries.node_num), 0),
+                    remote_rf_observations=coalesce((SELECT remote_rf_observations
+                        FROM atlas_source_counts WHERE node_num=node_summaries.node_num), 0),
+                    mqtt_observations=coalesce((SELECT mqtt_observations FROM atlas_source_counts
+                        WHERE node_num=node_summaries.node_num), 0);
+                DROP TABLE atlas_source_counts;
+
+                CREATE TEMP TABLE atlas_latest_rf AS
+                SELECT node_num, observer_id, observed_at FROM (
+                    SELECT json_extract(raw_event, '$.from_node') AS node_num,
+                           observer_id, observed_at,
+                           row_number() OVER (PARTITION BY json_extract(raw_event, '$.from_node')
+                               ORDER BY observed_at DESC) AS rank
+                    FROM observations WHERE observer_id NOT LIKE 'MQTT:%'
+                ) WHERE rank=1;
+                CREATE INDEX atlas_latest_rf_node_idx ON atlas_latest_rf(node_num);
+                UPDATE node_summaries SET
+                    latest_rf_observer_id=(SELECT observer_id FROM atlas_latest_rf
+                        WHERE node_num=node_summaries.node_num),
+                    latest_rf_observed_at=(SELECT observed_at FROM atlas_latest_rf
+                        WHERE node_num=node_summaries.node_num);
+                DROP TABLE atlas_latest_rf;
                 """
             )
         self.connection.commit()
@@ -580,6 +646,10 @@ class AtlasStore:
             return
         observed_at = event["observed_at"]
         source = str(event.get("source", "UNKNOWN"))
+        observer_id = str(event["observer_id"])
+        direct_rf_increment = int(source == "RF_OBSERVED" and not observer_id.startswith("MQTT:"))
+        remote_rf_increment = int(source == "RF_OBSERVED" and observer_id.startswith("MQTT:"))
+        mqtt_increment = int(source == "MQTT_NETWORK")
         packet_seen = observed_at if isinstance(event.get("packet_id"), int) else None
         values = (
             sender,
@@ -588,18 +658,24 @@ class AtlasStore:
             event["event_id"],
             event["event"],
             source,
-            event["observer_id"],
+            observer_id,
             event.get("rx_rssi"),
             event.get("rx_snr"),
             packet_seen,
+            direct_rf_increment,
+            remote_rf_increment,
+            mqtt_increment,
+            observer_id if direct_rf_increment else None,
+            observed_at if direct_rf_increment else None,
         )
         self.connection.execute(
             """
             INSERT INTO node_summaries
                 (node_num, first_heard, last_heard, last_event_id, last_event_type,
                  last_source, last_observer_id, last_rssi, last_snr, last_packet_seen,
-                 sent_observations)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 sent_observations, rf_observations, remote_rf_observations,
+                 mqtt_observations, latest_rf_observer_id, latest_rf_observed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
             ON CONFLICT(node_num) DO UPDATE SET
                 first_heard=min(node_summaries.first_heard, excluded.first_heard),
                 last_heard=max(node_summaries.last_heard, excluded.last_heard),
@@ -620,7 +696,19 @@ class AtlasStore:
                          (node_summaries.last_packet_seen IS NULL OR
                           excluded.last_packet_seen>=node_summaries.last_packet_seen)
                     THEN excluded.last_packet_seen ELSE node_summaries.last_packet_seen END,
-                sent_observations=node_summaries.sent_observations+1
+                sent_observations=node_summaries.sent_observations+1,
+                rf_observations=node_summaries.rf_observations+excluded.rf_observations,
+                remote_rf_observations=node_summaries.remote_rf_observations+
+                    excluded.remote_rf_observations,
+                mqtt_observations=node_summaries.mqtt_observations+excluded.mqtt_observations,
+                latest_rf_observer_id=CASE WHEN excluded.latest_rf_observed_at IS NOT NULL AND
+                    (node_summaries.latest_rf_observed_at IS NULL OR
+                     excluded.latest_rf_observed_at>=node_summaries.latest_rf_observed_at)
+                    THEN excluded.latest_rf_observer_id ELSE node_summaries.latest_rf_observer_id END,
+                latest_rf_observed_at=CASE WHEN excluded.latest_rf_observed_at IS NOT NULL AND
+                    (node_summaries.latest_rf_observed_at IS NULL OR
+                     excluded.latest_rf_observed_at>=node_summaries.latest_rf_observed_at)
+                    THEN excluded.latest_rf_observed_at ELSE node_summaries.latest_rf_observed_at END
             """,
             values,
         )
@@ -1246,31 +1334,6 @@ class AtlasStore:
                 dict(row)
                 for row in self.connection.execute(
                     """
-                WITH source_counts AS (
-                    SELECT from_node AS node_num,
-                           sum(CASE WHEN source='RF_OBSERVED' AND observer_id NOT LIKE 'MQTT:%' THEN 1 ELSE 0 END) AS rf_observations,
-                           sum(CASE WHEN source='RF_OBSERVED' AND observer_id LIKE 'MQTT:%' THEN 1 ELSE 0 END) AS remote_rf_observations,
-                           sum(CASE WHEN source='MQTT_NETWORK' THEN 1 ELSE 0 END) AS mqtt_observations
-                    FROM (
-                        SELECT json_extract(raw_event, '$.from_node') AS from_node,
-                               json_extract(raw_event, '$.source') AS source,
-                               json_extract(raw_event, '$.observer_id') AS observer_id FROM observations
-                        UNION ALL
-                        SELECT json_extract(raw_event, '$.from_node') AS from_node,
-                               json_extract(raw_event, '$.source') AS source,
-                               json_extract(raw_event, '$.observer_id') AS observer_id FROM events
-                    ) WHERE from_node IS NOT NULL GROUP BY from_node
-                ), latest_direct_rf AS (
-                    SELECT node_num, observer_id, observed_at FROM (
-                        SELECT t.from_node AS node_num, o.observer_id, o.observed_at,
-                               row_number() OVER (
-                                   PARTITION BY t.from_node ORDER BY o.observed_at DESC
-                               ) AS rank
-                        FROM observations o
-                        JOIN transmissions t ON t.id=o.transmission_id
-                        WHERE o.observer_id NOT LIKE 'MQTT:%'
-                    ) WHERE rank=1
-                )
                 SELECT s.*, m.node_id, m.long_name, m.short_name, m.hardware_model, m.role,
                        m.firmware_version, m.device_state_version, m.has_wifi,
                        m.has_bluetooth, m.has_ethernet, m.has_remote_hardware,
@@ -1278,25 +1341,18 @@ class AtlasStore:
                        m.updated_at AS identity_updated_at,
                        p.latitude, p.longitude, p.altitude,
                        p.observed_at AS position_observed_at,
-                       latest_rf.observer_id AS latest_rf_observer_id,
-                       latest_rf.observed_at AS latest_rf_observed_at,
                        CASE WHEN p.event_id IS NULL THEN 0 ELSE 1 END AS positioned,
-                       coalesce(c.rf_observations, 0) AS rf_observations,
-                       coalesce(c.remote_rf_observations, 0) AS remote_rf_observations,
-                       coalesce(c.mqtt_observations, 0) AS mqtt_observations,
-                       CASE WHEN coalesce(c.rf_observations, 0)>0 THEN 'RF_OBSERVED'
-                            WHEN coalesce(c.remote_rf_observations, 0)>0 THEN 'REMOTE_GATEWAY_RF'
-                            WHEN coalesce(c.mqtt_observations, 0)>0 THEN 'MQTT_NETWORK'
+                       CASE WHEN s.rf_observations>0 THEN 'RF_OBSERVED'
+                            WHEN s.remote_rf_observations>0 THEN 'REMOTE_GATEWAY_RF'
+                            WHEN s.mqtt_observations>0 THEN 'MQTT_NETWORK'
                             ELSE s.last_source END AS display_provenance
                 FROM node_summaries s
                 LEFT JOIN node_metadata m ON m.node_num=s.node_num
-                LEFT JOIN source_counts c ON c.node_num=s.node_num
                 LEFT JOIN positions p ON p.event_id=(
                     SELECT latest.event_id FROM positions latest
                     WHERE latest.node_num=s.node_num
                     ORDER BY latest.observed_at DESC LIMIT 1
                 )
-                LEFT JOIN latest_direct_rf latest_rf ON latest_rf.node_num=s.node_num
                 ORDER BY s.last_heard DESC LIMIT ?
                 """,
                     (limit,),
@@ -1307,21 +1363,6 @@ class AtlasStore:
         with self.lock:
             row = self.connection.execute(
                 """
-                WITH source_counts AS (
-                    SELECT from_node AS node_num,
-                           sum(CASE WHEN source='RF_OBSERVED' AND observer_id NOT LIKE 'MQTT:%' THEN 1 ELSE 0 END) AS rf_observations,
-                           sum(CASE WHEN source='RF_OBSERVED' AND observer_id LIKE 'MQTT:%' THEN 1 ELSE 0 END) AS remote_rf_observations,
-                           sum(CASE WHEN source='MQTT_NETWORK' THEN 1 ELSE 0 END) AS mqtt_observations
-                    FROM (
-                        SELECT json_extract(raw_event, '$.from_node') AS from_node,
-                               json_extract(raw_event, '$.source') AS source,
-                               json_extract(raw_event, '$.observer_id') AS observer_id FROM observations
-                        UNION ALL
-                        SELECT json_extract(raw_event, '$.from_node') AS from_node,
-                               json_extract(raw_event, '$.source') AS source,
-                               json_extract(raw_event, '$.observer_id') AS observer_id FROM events
-                    ) WHERE from_node=? GROUP BY from_node
-                )
                 SELECT s.*, m.node_id, m.long_name, m.short_name, m.hardware_model, m.role,
                        m.firmware_version, m.device_state_version, m.has_wifi,
                        m.has_bluetooth, m.has_ethernet, m.has_remote_hardware,
@@ -1329,16 +1370,12 @@ class AtlasStore:
                        p.latitude, p.longitude, p.altitude,
                        p.observed_at AS position_observed_at,
                        CASE WHEN p.event_id IS NULL THEN 0 ELSE 1 END AS positioned,
-                       coalesce(c.rf_observations, 0) AS rf_observations,
-                       coalesce(c.remote_rf_observations, 0) AS remote_rf_observations,
-                       coalesce(c.mqtt_observations, 0) AS mqtt_observations,
-                       CASE WHEN coalesce(c.rf_observations, 0)>0 THEN 'RF_OBSERVED'
-                            WHEN coalesce(c.remote_rf_observations, 0)>0 THEN 'REMOTE_GATEWAY_RF'
-                            WHEN coalesce(c.mqtt_observations, 0)>0 THEN 'MQTT_NETWORK'
+                       CASE WHEN s.rf_observations>0 THEN 'RF_OBSERVED'
+                            WHEN s.remote_rf_observations>0 THEN 'REMOTE_GATEWAY_RF'
+                            WHEN s.mqtt_observations>0 THEN 'MQTT_NETWORK'
                             ELSE s.last_source END AS display_provenance
                 FROM node_summaries s
                 LEFT JOIN node_metadata m ON m.node_num=s.node_num
-                LEFT JOIN source_counts c ON c.node_num=s.node_num
                 LEFT JOIN positions p ON p.event_id=(
                     SELECT latest.event_id FROM positions latest
                     WHERE latest.node_num=s.node_num
@@ -1346,7 +1383,7 @@ class AtlasStore:
                 )
                 WHERE s.node_num=?
                 """,
-                (node_num, node_num),
+                (node_num,),
             ).fetchone()
             return dict(row) if row else None
 

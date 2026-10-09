@@ -424,6 +424,7 @@ export default function Home() {
   const [apiHealthy, setApiHealthy] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [initialLoading, setInitialLoading] = useState(true);
+  const [nodeListLoading, setNodeListLoading] = useState(true);
   const [qualityViewLoading, setQualityViewLoading] = useState(false);
   const [locationWarning, setLocationWarning] = useState<string | null>(null);
   const showLocationWarning = (message = "LOCATION SET INCORRECTLY · NODE REPORTED 0,0") => {
@@ -574,6 +575,8 @@ export default function Home() {
     let refreshing = false;
     let refreshPending = false;
     let refreshTimer: number | undefined;
+    let firstMapBatch = true;
+    let firstSummaryBatch = true;
     const refresh = async () => {
       if (refreshing) {
         refreshPending = true;
@@ -581,39 +584,51 @@ export default function Home() {
       }
       refreshing = true;
       try {
-        const [nodeResponse, activityResponse, observerResponse, timelineResponse] = await Promise.all([
-          fetch(`${base}/api/v1/nodes?limit=500`),
-          fetch(`${base}/api/v1/activity?limit=250`),
-          fetch(`${base}/api/v1/observers`),
-          fetch(`${base}/api/v1/activity/timeline?minutes=15`),
-        ]);
-        if (!nodeResponse.ok || !activityResponse.ok || !observerResponse.ok || !timelineResponse.ok) throw new Error("ATLAS API unavailable");
+        const initialMapBatch = firstMapBatch;
+        const nodeResponse = await fetch(`${base}/api/v1/nodes?limit=${initialMapBatch ? 200 : 500}`);
+        if (!nodeResponse.ok) throw new Error("ATLAS node map unavailable");
         if (closed) return;
-        setApiHealthy(true);
         const positionedNodes = ((await nodeResponse.json()) as ApiNode[]).map(toMeshNode);
-        setActivity((await activityResponse.json()) as ActivityEvent[]);
-        setObservers((await observerResponse.json()) as ApiObserver[]);
-        setTimelineData((await timelineResponse.json()) as TimelineData);
         setLiveNodes(positionedNodes);
+        setApiHealthy(true);
         setInitialLoading(false);
         setSelected((current) => current
           ? positionedNodes.find((node) => node.id === current.id) ?? current
           : null);
+        firstMapBatch = false;
+        if (initialMapBatch) refreshPending = true;
+
+        const [activityResponse, observerResponse, timelineResponse] = await Promise.all([
+          fetch(`${base}/api/v1/activity?limit=250`),
+          fetch(`${base}/api/v1/observers`),
+          fetch(`${base}/api/v1/activity/timeline?minutes=15`),
+        ]);
+        if (!activityResponse.ok || !observerResponse.ok || !timelineResponse.ok) throw new Error("ATLAS API unavailable");
+        if (closed) return;
+        setActivity((await activityResponse.json()) as ActivityEvent[]);
+        setObservers((await observerResponse.json()) as ApiObserver[]);
+        setTimelineData((await timelineResponse.json()) as TimelineData);
         const now = Date.now();
         const enrichmentRequests: Array<Promise<void>> = [];
         if (now >= summaryRefreshAt.current) {
           summaryRefreshAt.current = now + 30_000;
-          enrichmentRequests.push(fetch(`${base}/api/v1/node-summaries?limit=1000`)
+          const initialSummaryBatch = firstSummaryBatch;
+          enrichmentRequests.push(fetch(`${base}/api/v1/node-summaries?limit=${initialSummaryBatch ? 250 : 1000}`)
             .then((response) => response.ok ? response.json() as Promise<NodeSummary[]> : Promise.reject())
             .then((summaries) => {
               if (closed) return;
               setNodeSummaries(summaries);
+              firstSummaryBatch = false;
+              if (initialSummaryBatch) {
+                summaryRefreshAt.current = 0;
+                refreshPending = true;
+              }
               setSelectedNode((current) => {
                 if (!current) return null;
                 const refreshed = summaries.find((node) => node.node_num === current.node_num);
                 return refreshed ? { ...current, ...refreshed } : current;
               });
-            }));
+            }).finally(() => { if (!closed) setNodeListLoading(false); }));
         }
         if (now >= healthRefreshAt.current) {
           healthRefreshAt.current = now + 30_000;
@@ -626,6 +641,7 @@ export default function Home() {
         if (!closed) {
           setApiHealthy(false);
           setInitialLoading(false);
+          setNodeListLoading(false);
         }
       } finally {
         refreshing = false;
@@ -1637,14 +1653,14 @@ export default function Home() {
             <button className="layer-row prediction-import" onClick={() => predictionInput.current?.click()}><span>{predictionName ? `MODEL · ${predictionName}` : "IMPORT SITE PLANNER GEOJSON"}</span><Upload size={13} /></button>
             <input ref={predictionInput} type="file" accept=".geojson,.json,application/geo+json,application/json" hidden onChange={(event) => void importTerrainPrediction(event.target.files?.[0])} />
           </details>
-          <div className="node-list-summary"><span>{initialLoading ? "LOADING NODES" : `${filteredNodeSummaries.length} NODES`}</span><span>{initialLoading ? "PLEASE WAIT" : "LAST HEARD"}</span></div>
+          <div className="node-list-summary"><span>{nodeListLoading ? "LOADING NODES" : `${filteredNodeSummaries.length} NODES`}</span><span>{nodeListLoading ? "PLEASE WAIT" : "LAST HEARD"}</span></div>
           <div className="network-node-list">
-            {initialLoading && <div className="network-list-loader" role="status" aria-live="polite">
+            {nodeListLoading && <div className="network-list-loader" role="status" aria-live="polite">
               <LoaderCircle size={22} aria-hidden="true" />
               <strong>LOADING NETWORK DATA…</strong>
               <small>Synchronizing nodes and recent activity</small>
             </div>}
-            {!initialLoading && filteredNodeSummaries.map((node) => {
+            {!nodeListLoading && filteredNodeSummaries.map((node) => {
               const id = `!${(node.node_num >>> 0).toString(16).padStart(8, "0")}`;
               return <button key={node.node_num} className={`network-node-row ${selectedNode?.node_num === node.node_num ? "selected" : ""}`} onClick={() => selectNodeSummary(node)}>
                 <i className={`node-source ${node.display_provenance === "RF_OBSERVED" ? "rf" : node.display_provenance === "REMOTE_GATEWAY_RF" ? "remote-rf" : node.display_provenance === "MQTT_NETWORK" ? "mqtt" : "other"}`} />
