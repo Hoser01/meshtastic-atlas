@@ -1,48 +1,70 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
-import threading
-import time
 from pathlib import Path
 
 import requests
 from flask import Flask, jsonify, redirect, request
+
+from snapshot_cache import SnapshotCache
 
 
 APP_DIR = Path(__file__).resolve().parent
 ATLAS_FEED_URL = os.getenv(
     "ATLAS_FEED_URL", "http://127.0.0.1:18081/api/v1/map-feed"
 )
-ATLAS_TIMEOUT_SECONDS = float(os.getenv("ATLAS_TIMEOUT_SECONDS", "10"))
+ATLAS_TIMEOUT_SECONDS = max(0.1, float(os.getenv("ATLAS_TIMEOUT_SECONDS", "2.5")))
 ATLAS_CACHE_SECONDS = float(os.getenv("ATLAS_CACHE_SECONDS", "20"))
 
 app = Flask(__name__, static_folder=str(APP_DIR / "static"), static_url_path="/static")
-_cache_lock = threading.Lock()
-_cache: tuple[float, dict] = (0.0, {})
+app.logger.setLevel(logging.INFO)
+ATLAS_RETRY_SECONDS = float(os.getenv("ATLAS_RETRY_SECONDS", "5"))
+ATLAS_RETRY_MAX_SECONDS = float(os.getenv("ATLAS_RETRY_MAX_SECONDS", "60"))
+ATLAS_CACHE_DIRECTORY = os.getenv("ATLAS_CACHE_DIRECTORY")
+
+
+def _read_feed(url: str, expected_type: type):
+    response = requests.get(url, timeout=ATLAS_TIMEOUT_SECONDS)
+    try:
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, expected_type):
+            raise ValueError("Unexpected ATLAS response schema")
+        return payload
+    finally:
+        response.close()
+
+
+_nodes_cache = SnapshotCache(
+    "nodes", lambda: _read_feed(ATLAS_FEED_URL, dict), dict,
+    ttl=ATLAS_CACHE_SECONDS, retry_base=ATLAS_RETRY_SECONDS,
+    retry_max=ATLAS_RETRY_MAX_SECONDS, directory=ATLAS_CACHE_DIRECTORY,
+    logger=app.logger,
+)
+_observers_cache = SnapshotCache(
+    "observers", lambda: _read_feed(ATLAS_FEED_URL.rsplit("/", 1)[0] + "/observers", list), list,
+    ttl=300, retry_base=ATLAS_RETRY_SECONDS,
+    retry_max=ATLAS_RETRY_MAX_SECONDS, directory=ATLAS_CACHE_DIRECTORY,
+    logger=app.logger,
+)
 
 
 def fetch_atlas_nodes() -> dict:
-    """Fetch a short-lived ATLAS snapshot, falling back to the last good one."""
-    global _cache
-    now = time.monotonic()
-    with _cache_lock:
-        cached_at, cached = _cache
-        if cached and now - cached_at < ATLAS_CACHE_SECONDS:
-            return cached
-        try:
-            response = requests.get(ATLAS_FEED_URL, timeout=ATLAS_TIMEOUT_SECONDS)
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise ValueError("ATLAS map feed must be a JSON object")
-            _cache = (now, payload)
-            return payload
-        except Exception:
-            if cached:
-                app.logger.warning("Serving stale ATLAS snapshot after refresh failure")
-                return cached
-            raise
+    return _nodes_cache.get()
+
+
+def _cache_headers(response, cache):
+    status = cache.status()
+    response.headers["X-Atlas-Cache"] = (
+        "empty" if not status["ready"] else "stale" if status["stale"] else "fresh"
+    )
+    if status["age_seconds"] is not None:
+        response.headers["X-Atlas-Cache-Age"] = str(status["age_seconds"])
+    if not status["ready"]:
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/")
@@ -58,11 +80,14 @@ def index():
 
 @app.get("/health")
 def health():
-    try:
-        nodes = fetch_atlas_nodes()
-        return jsonify({"status": "ok", "source": "atlas", "nodes": len(nodes)})
-    except Exception as error:
-        return jsonify({"status": "error", "source": "atlas", "error": str(error)}), 503
+    nodes = fetch_atlas_nodes()
+    status = _nodes_cache.status()
+    response = jsonify({
+        "status": "ok" if status["ready"] else "warming",
+        "source": "atlas", "nodes": len(nodes), "cache": status,
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response, 200 if status["ready"] else 503
 
 
 @app.get("/new")
@@ -107,10 +132,10 @@ def new_map_nodes():
             )
         response = jsonify(payload)
         response.headers["Cache-Control"] = "public, max-age=20, stale-while-revalidate=60"
-        return response
+        return _cache_headers(response, _nodes_cache)
     except Exception as error:
-        app.logger.exception("ATLAS-only map feed unavailable")
-        return jsonify({"error": str(error)}), 502
+        app.logger.error(json.dumps({"event": "atlas_render_failure", "feed": "nodes", "error_type": type(error).__name__}))
+        return jsonify({"error": "ATLAS map feed unavailable"}), 502
 
 
 @app.get("/new/summary")
@@ -130,26 +155,14 @@ def new_map_summary():
             }
         )
         response.headers["Cache-Control"] = "public, max-age=20, stale-while-revalidate=60"
-        return response
+        return _cache_headers(response, _nodes_cache)
     except Exception as error:
-        app.logger.exception("ATLAS map summary unavailable")
-        return jsonify({"error": str(error)}), 502
+        app.logger.error(json.dumps({"event": "atlas_render_failure", "feed": "summary", "error_type": type(error).__name__}))
+        return jsonify({"error": "ATLAS map feed unavailable"}), 502
 
 
 @app.get("/new/observers")
 def new_map_observers():
-    try:
-        response = requests.get(
-            ATLAS_FEED_URL.rsplit("/", 1)[0] + "/observers",
-            timeout=ATLAS_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise ValueError("ATLAS observers response must be a JSON array")
-        result = jsonify(payload)
-        result.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=900"
-        return result
-    except Exception as error:
-        app.logger.exception("ATLAS observer feed unavailable")
-        return jsonify({"error": str(error)}), 502
+    response = jsonify(_observers_cache.get())
+    response.headers["Cache-Control"] = "public, max-age=300, stale-while-revalidate=900"
+    return _cache_headers(response, _observers_cache)
