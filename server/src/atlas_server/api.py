@@ -18,6 +18,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from .live import LiveBroker
@@ -41,10 +42,14 @@ def create_app(
     allow_simulation: bool = False,
     allowed_origins: list[str] | None = None,
     observer_tokens: dict[str, str] | None = None,
+    prediction_dir: Path | str | None = None,
 ) -> FastAPI:
     database = database or os.environ.get("ATLAS_DATABASE", "data/atlas.db")
     if ingest_token is None:
         ingest_token = os.environ.get("ATLAS_INGEST_TOKEN")
+    prediction_dir = Path(
+        prediction_dir or os.environ.get("ATLAS_COVERAGE_DIR", "/var/lib/atlas/coverage/current")
+    )
     if allowed_origins is None:
         configured_origins = os.environ.get(
             "ATLAS_ALLOWED_ORIGINS",
@@ -80,7 +85,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.33", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.35", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -506,6 +511,29 @@ def create_app(
             "observer_count": len({row["observer_id"] for row in latest.values()}),
             "window_days": days,
         }}
+
+    @app.get("/api/v1/coverage/predicted", response_class=FileResponse)
+    def predicted_coverage() -> FileResponse:
+        """Serve the last successfully generated terrain-model artifact."""
+        path = prediction_dir / "predicted.geojson"
+        if not path.is_file():
+            raise HTTPException(503, "predicted coverage has not been generated")
+        return FileResponse(
+            path,
+            media_type="application/geo+json",
+            headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
+        )
+
+    @app.get("/api/v1/coverage/predicted/metadata", response_class=FileResponse)
+    def predicted_coverage_metadata() -> FileResponse:
+        path = prediction_dir / "metadata.json"
+        if not path.is_file():
+            raise HTTPException(503, "predicted coverage has not been generated")
+        return FileResponse(
+            path,
+            media_type="application/json",
+            headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
+        )
 
     @app.get("/api/v1/activity")
     def activity(limit: int = Query(100, ge=1, le=1000)) -> list[dict[str, Any]]:

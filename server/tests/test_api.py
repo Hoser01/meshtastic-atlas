@@ -1,9 +1,16 @@
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 
 from atlas_server.api import create_app
 from atlas_server.live import LiveBroker
 from fastapi.testclient import TestClient
+
+OBSERVED_AT = datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def iso_time(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def observation(event_id: str = "a" * 32) -> dict:
@@ -14,7 +21,7 @@ def observation(event_id: str = "a" * 32) -> dict:
         "observer_id": "LZG2",
         "observer_node_num": 2733240936,
         "observer_node_id": "!a2e9f268",
-        "observed_at": "2026-09-18T13:00:00Z",
+        "observed_at": iso_time(OBSERVED_AT),
         "source": "RF_OBSERVED",
         "packet_id": 42,
         "from_node": 100,
@@ -32,6 +39,32 @@ def observation(event_id: str = "a" * 32) -> dict:
             "precision_bits": 20,
         },
     }
+
+
+def test_cached_prediction_api(tmp_path) -> None:
+    prediction = tmp_path / "prediction"
+    prediction.mkdir()
+    (prediction / "predicted.geojson").write_text(
+        json.dumps({"type": "FeatureCollection", "features": [], "metadata": {"model": "test"}}),
+        encoding="utf-8",
+    )
+    (prediction / "metadata.json").write_text(
+        json.dumps({"status": "ok", "model": "test"}), encoding="utf-8"
+    )
+    app = create_app(tmp_path / "atlas.db", prediction_dir=prediction)
+    with TestClient(app) as client:
+        response = client.get("/api/v1/coverage/predicted")
+        assert response.status_code == 200
+        assert response.json()["metadata"]["model"] == "test"
+        assert response.headers["cache-control"].startswith("public, max-age=3600")
+        metadata = client.get("/api/v1/coverage/predicted/metadata")
+        assert metadata.json() == {"status": "ok", "model": "test"}
+
+
+def test_cached_prediction_api_is_unavailable_before_first_build(tmp_path) -> None:
+    app = create_app(tmp_path / "atlas.db", prediction_dir=tmp_path / "missing")
+    with TestClient(app) as client:
+        assert client.get("/api/v1/coverage/predicted").status_code == 503
 
 
 def test_read_api_and_authenticated_ingestion(tmp_path) -> None:
@@ -95,8 +128,8 @@ def test_read_api_and_authenticated_ingestion(tmp_path) -> None:
         assert telemetry[0]["metrics"]["battery_level"] == 82
         node_detail = client.get("/api/v1/nodes/100").json()
         assert node_detail["last_source"] == "RF_OBSERVED"
-        assert node_detail["last_rf_seen"] == "2026-09-18T13:00:00Z"
-        assert node_detail["last_any_seen"] == "2026-09-18T13:00:00Z"
+        assert node_detail["last_rf_seen"] == iso_time(OBSERVED_AT)
+        assert node_detail["last_any_seen"] == iso_time(OBSERVED_AT)
         assert node_detail["recently_heard_by"][0]["observer_id"] == "LZG2"
         assert node_detail["recently_heard_by"][0]["latest_hops"] == 1
         node_activity = client.get("/api/v1/nodes/100/activity").json()
@@ -119,7 +152,10 @@ def test_activity_marks_repeated_packet_at_same_observer(tmp_path) -> None:
     app = create_app(tmp_path / "atlas.db", ingest_token="secret")
     with TestClient(app) as client:
         first = observation("a" * 32)
-        repeated = {**observation("b" * 32), "observed_at": "2026-09-18T13:01:00Z"}
+        repeated = {
+            **observation("b" * 32),
+            "observed_at": iso_time(OBSERVED_AT + timedelta(minutes=1)),
+        }
         for event in (first, repeated):
             assert client.post(
                 "/api/v1/events", json=event,

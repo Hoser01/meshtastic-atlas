@@ -245,6 +245,16 @@ type CoverageSurface = {
   metadata: { sample_count: number; node_count: number; observer_count: number; window_days: number };
 };
 
+type PredictionSurface = {
+  type: "FeatureCollection";
+  features: Array<{ type: "Feature"; properties: Record<string, number | string | null>; geometry: { type: "Polygon"; coordinates: number[][][] } }>;
+  metadata: {
+    generated_at: string; model: string; model_version: string; collector_count: number;
+    cell_count: number; cell_km: number; collector_antenna_height_m: number;
+    client_antenna_height_m: number; disclaimer: string;
+  };
+};
+
 type ApiObserver = {
   observer_id: string;
   observer_node_num: number;
@@ -352,7 +362,7 @@ function LegendContents() {
     <div className="help-legend">
       <span><i className="legend-swatch heatmap-lz" /><b>RF reachability heatmap</b><small>Purple → orange → green. Positioned nodes whose packets reached a registered collector; direct reception is weighted strongest and additional hops progressively less.</small></span>
       <span><i className="legend-swatch heatmap-lz" /><b>Activity heatmap</b><small>Purple → orange → green. Increasing concentration of recent packet activity around positioned nodes.</small></span>
-      <span><i className="legend-swatch predicted" /><b>Predicted coverage</b><small>Imported propagation-model output, kept separate from measurements.</small></span>
+      <span><i className="legend-swatch predicted" /><b>Predicted direct RF coverage</b><small>Nightly cached terrain model using a generic 3 m collector antenna and 1.5 m client antenna. Purple is marginal, orange likely, and green strong. This is modeled—not measured—evidence.</small></span>
     </div>
     <h3>MAP CONTROLS</h3>
     <div className="help-legend control-legend">
@@ -386,6 +396,7 @@ export default function Home() {
   const [liveNodes, setLiveNodes] = useState<MeshNode[]>([]);
   const [positionHistory, setPositionHistory] = useState<ApiNode[]>([]);
   const [coverageSurface, setCoverageSurface] = useState<CoverageSurface | null>(null);
+  const [predictionSurface, setPredictionSurface] = useState<PredictionSurface | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [timelineData, setTimelineData] = useState<TimelineData | null>(null);
@@ -705,6 +716,35 @@ export default function Home() {
   }, [showCoverage, showHeatmap]);
 
   useEffect(() => {
+    if (!showPrediction || predictionSurface) return;
+    const base = (process.env.NEXT_PUBLIC_ATLAS_API_URL || window.location.origin).replace(/\/$/, "");
+    const controller = new AbortController();
+    fetch(`${base}/api/v1/coverage/predicted`, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`prediction service returned ${response.status}`);
+        return response.json() as Promise<PredictionSurface>;
+      })
+      .then((surface) => {
+        setPredictionSurface(surface);
+        const date = new Date(surface.metadata.generated_at).toLocaleDateString();
+        setPredictionName(`${surface.metadata.model} · ${date}`);
+        setMapError(null);
+      })
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          setMapError(error instanceof Error ? `Predicted coverage: ${error.message}` : "Predicted coverage unavailable");
+        }
+      });
+    return () => controller.abort();
+  }, [predictionSurface, showPrediction]);
+
+  useEffect(() => {
+    if (!mapReady || !map.current || !predictionSurface) return;
+    const source = map.current.getSource("terrain-prediction") as GeoJSONSource | undefined;
+    source?.setData(predictionSurface as never);
+  }, [mapReady, predictionSurface]);
+
+  useEffect(() => {
     if (!qualityView) return;
     const base = (process.env.NEXT_PUBLIC_ATLAS_API_URL || window.location.origin).replace(/\/$/, "");
     const controller = new AbortController();
@@ -975,7 +1015,7 @@ export default function Home() {
         layout: { visibility: "none" },
         paint: {
           "fill-color": ["coalesce", ["get", "fill"], ["get", "color"], "#54e4fb"],
-          "fill-opacity": 0.28,
+          "fill-opacity": ["match", ["get", "band"], "strong", 0.30, "likely", 0.25, "marginal", 0.19, 0.22],
         },
       });
       instance.addLayer({
@@ -1529,6 +1569,7 @@ export default function Home() {
       if (parsed.type !== "FeatureCollection") throw new Error("Expected a GeoJSON FeatureCollection");
       const source = map.current.getSource("terrain-prediction") as GeoJSONSource | undefined;
       source?.setData(parsed);
+      setPredictionSurface(null);
       setPredictionName(file.name);
       setShowPrediction(true);
       setMapError(null);
@@ -1646,11 +1687,11 @@ export default function Home() {
           <details ref={layersPanel} className="network-controls">
             <summary>MAP LAYERS <Layers3 size={12} /></summary>
             <button className="layer-row" onClick={() => setShowNodes(!showNodes)}><span>Nodes</span><span className={`mini-toggle ${showNodes ? "on" : ""}`}><i /></span></button>
-            <button className="layer-row" onClick={() => setShowPrediction(!showPrediction)} disabled={!predictionName}><span>Predicted RF Coverage</span><span className={`mini-toggle ${showPrediction ? "on" : ""}`}><i /></span></button>
+            <button className="layer-row" onClick={() => setShowPrediction(!showPrediction)}><span>Predicted Direct RF Coverage</span><span className={`mini-toggle ${showPrediction ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowCoverage(!showCoverage)}><span>RF Reachability Heatmap</span><span className={`mini-toggle ${showCoverage ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowHeatmap(!showHeatmap)}><span>Activity Heatmap</span><span className={`mini-toggle ${showHeatmap ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowLinks(!showLinks)}><span>Live Packet Paths</span><span className={`mini-toggle ${showLinks ? "on" : ""}`}><i /></span></button>
-            <button className="layer-row prediction-import" onClick={() => predictionInput.current?.click()}><span>{predictionName ? `MODEL · ${predictionName}` : "IMPORT SITE PLANNER GEOJSON"}</span><Upload size={13} /></button>
+            <button className="layer-row prediction-import" onClick={() => predictionInput.current?.click()} title={predictionName ?? "Nightly cached model"}><span>IMPORT MODEL OVERRIDE</span><Upload size={13} /></button>
             <input ref={predictionInput} type="file" accept=".geojson,.json,application/geo+json,application/json" hidden onChange={(event) => void importTerrainPrediction(event.target.files?.[0])} />
           </details>
           <div className="node-list-summary"><span>{nodeListLoading ? "LOADING NODES" : `${filteredNodeSummaries.length} NODES`}</span><span>{nodeListLoading ? "PLEASE WAIT" : "LAST HEARD"}</span></div>
@@ -1685,7 +1726,7 @@ export default function Home() {
         <div className="map-caption">
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>
           {showCoverage && <span title="Positioned nodes reaching registered ATLAS collectors; hop-weighted and inferred"><i className="legend-dot measured-dot" /> RF REACHABILITY · {coverageSurface?.metadata.node_count ?? 0} NODES · {coverageSurface?.metadata.sample_count ?? 0} SAMPLES</span>}
-          {showPrediction && predictionName && <span><i className="legend-dot prediction-dot" /> PREDICTED · MODEL</span>}
+          {showPrediction && predictionSurface && <span title={predictionSurface.metadata.disclaimer}><i className="legend-dot prediction-dot" /> PREDICTED · {predictionSurface.metadata.collector_count} COLLECTORS · {predictionSurface.metadata.cell_count} CELLS</span>}
           {showHeatmap && <span><i className="legend-dot activity-dot" /> ACTIVITY · 24H</span>}
         </div>
 
