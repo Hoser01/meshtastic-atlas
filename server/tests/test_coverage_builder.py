@@ -1,5 +1,6 @@
 from atlas_server.coverage_builder import (
     aggregate_points,
+    blend_reachability_evidence,
     cells_to_geojson,
     cells_to_png,
     classify_path_loss,
@@ -50,3 +51,61 @@ def test_terrain_tile_names_and_radius_selection():
     assert sdf_name(37, -95) == "37:38:94:95.sdf"
     tiles = terrain_tiles([{"latitude": 37.1, "longitude": -94.5}], 10)
     assert (37, -95) in tiles
+
+
+def test_repeated_reachability_calibrates_without_treating_single_activity_as_coverage():
+    bounds = (-95.0, 36.0, -93.0, 38.0)
+    cells = aggregate_points([("ONE", 37.0, -94.0, 145.0)], bounds, 1.0)
+    features = []
+    for index in range(3):
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "observer_id": f"OBS{index}", "transmitter_node": 100,
+                "hops": 2, "weight": 0.4,
+            },
+            "geometry": {"type": "Point", "coordinates": [-93.5, 37.5]},
+        })
+    features.append({
+        "type": "Feature",
+        "properties": {
+            "observer_id": "ONE", "transmitter_node": 200, "hops": 1, "weight": 1.0,
+        },
+        "geometry": {"type": "Point", "coordinates": [-93.7, 37.7]},
+    })
+    result = blend_reachability_evidence(
+        cells,
+        {"type": "FeatureCollection", "features": features, "metadata": {"window_days": 30}},
+        bounds,
+        1.0,
+    )
+    assert result["qualified_cells"] == 1
+    assert result["extended_cells"] == 1
+    assert result["direct_halo_cells"] == 0
+    evidence_cells = [cell for cell in cells.values() if cell.get("evidence_role") == "extended"]
+    assert len(evidence_cells) == 1
+    assert evidence_cells[0]["band"] == "marginal"
+
+
+def test_repeated_direct_evidence_reinforces_and_adds_conservative_halo():
+    bounds = (-95.0, 36.0, -93.0, 38.0)
+    cells = aggregate_points([("ONE", 37.0, -94.0, 145.0)], bounds, 1.0)
+    features = [{
+        "type": "Feature",
+        "properties": {
+            "observer_id": "ONE", "transmitter_node": 100,
+            "hops": 0, "weight": 1.0,
+        },
+        "geometry": {"type": "Point", "coordinates": [-94.0, 37.0]},
+    } for _ in range(3)]
+    result = blend_reachability_evidence(
+        cells,
+        {"type": "FeatureCollection", "features": features, "metadata": {"window_days": 30}},
+        bounds,
+        1.0,
+    )
+    assert result["reinforced_cells"] == 1
+    assert result["direct_halo_cells"] == 4
+    center = next(cell for cell in cells.values() if cell.get("evidence_role") == "reinforced")
+    assert center["terrain_band"] == "marginal"
+    assert center["band"] == "likely"

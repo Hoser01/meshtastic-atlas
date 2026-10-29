@@ -31,7 +31,7 @@ PREDICTION_COLORS = {
 
 
 def fetch_json(url: str, timeout: int = 60, attempts: int = 4) -> Any:
-    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.37"})
+    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.38"})
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -115,7 +115,7 @@ def ensure_terrain_tile(south: int, west: int, terrain_dir: Path) -> Path:
         if not href:
             raise RuntimeError(f"USGS did not return terrain for tile {south},{west}")
         tif_path = temp / "terrain.tif"
-        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.37"})
+        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.38"})
         with urllib.request.urlopen(request, timeout=300) as response, tif_path.open("wb") as output:
             shutil.copyfileobj(response, output)
 
@@ -207,6 +207,153 @@ def aggregate_points(
     return cells
 
 
+def blend_reachability_evidence(
+    cells: dict[tuple[int, int], dict[str, Any]],
+    payload: dict[str, Any],
+    bounds: tuple[float, float, float, float],
+    cell_km: float,
+) -> dict[str, Any]:
+    """Conservatively calibrate modeled cells with repeated positioned RF evidence."""
+    if payload.get("type") != "FeatureCollection" or not isinstance(payload.get("features"), list):
+        raise TypeError("reachability endpoint did not return a FeatureCollection")
+    west, south, east, north = bounds
+    lat_step = cell_km / 111.32
+    lon_step = cell_km / (111.32 * math.cos(math.radians((south + north) / 2)))
+    evidence: dict[tuple[int, int], dict[str, Any]] = {}
+    direct_samples = multihop_samples = 0
+    for feature in payload["features"]:
+        geometry = feature.get("geometry", {})
+        properties = feature.get("properties", {})
+        coordinates = geometry.get("coordinates")
+        if geometry.get("type") != "Point" or not isinstance(coordinates, list) or len(coordinates) < 2:
+            continue
+        longitude, latitude = coordinates[:2]
+        if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+            continue
+        if not (south <= latitude <= north and west <= longitude <= east):
+            continue
+        hops = max(0, int(properties.get("hops") or 0))
+        if hops > 7:
+            continue
+        weight = float(properties.get("weight") or 0)
+        row = math.floor((latitude - south) / lat_step)
+        column = math.floor((longitude - west) / lon_step)
+        bucket = evidence.setdefault(
+            (row, column),
+            {
+                "support_count": 0,
+                "direct_count": 0,
+                "multihop_count": 0,
+                "weighted_support": 0.0,
+                "observer_ids": set(),
+                "node_ids": set(),
+            },
+        )
+        bucket["support_count"] += 1
+        bucket["weighted_support"] += max(0.0, min(1.0, weight))
+        bucket["observer_ids"].add(str(properties.get("observer_id") or "UNKNOWN"))
+        bucket["node_ids"].add(str(properties.get("transmitter_node") or "UNKNOWN"))
+        if hops == 0:
+            bucket["direct_count"] += 1
+            direct_samples += 1
+        else:
+            bucket["multihop_count"] += 1
+            multihop_samples += 1
+
+    reinforced = extended = halo_cells = qualified = 0
+    direct_halo_sources: list[tuple[tuple[int, int], dict[str, Any]]] = []
+    rank = {"marginal": 0, "likely": 1, "strong": 2}
+    bands = ("marginal", "likely", "strong")
+
+    def evidence_properties(bucket: dict[str, Any], role: str) -> dict[str, Any]:
+        return {
+            "evidence_role": role,
+            "evidence_support_count": bucket["support_count"],
+            "direct_support_count": bucket["direct_count"],
+            "multihop_support_count": bucket["multihop_count"],
+            "weighted_support": round(bucket["weighted_support"], 3),
+            "evidence_observer_count": len(bucket["observer_ids"]),
+            "evidence_node_count": len(bucket["node_ids"]),
+        }
+
+    for key, bucket in evidence.items():
+        direct_qualified = bucket["direct_count"] >= 2
+        multihop_qualified = (
+            bucket["multihop_count"] >= 3 and bucket["weighted_support"] >= 0.75
+        )
+        if not direct_qualified and not multihop_qualified:
+            continue
+        qualified += 1
+        existing = cells.get(key)
+        if existing is not None:
+            original = existing["band"]
+            should_reinforce = direct_qualified or (
+                bucket["multihop_count"] >= 6 and len(bucket["observer_ids"]) >= 2
+            )
+            if should_reinforce and rank[original] < rank["strong"]:
+                existing["band"] = bands[rank[original] + 1]
+            existing.update(evidence_properties(bucket, "reinforced"))
+            existing["terrain_band"] = original
+            reinforced += 1
+        else:
+            band = "likely" if direct_qualified else "marginal"
+            cells[key] = {
+                "observer_id": "RF_EVIDENCE",
+                "path_loss_db": 141.0 if band == "likely" else 151.0,
+                "band": band,
+                "terrain_band": None,
+                "row": key[0],
+                "column": key[1],
+                "lat_step": lat_step,
+                "lon_step": lon_step,
+                **evidence_properties(bucket, "extended"),
+            }
+            extended += 1
+
+        if bucket["direct_count"] >= 3:
+            direct_halo_sources.append((key, bucket))
+
+    # Repeated direct reception supports a conservative one-cell local prediction.
+    for key, bucket in direct_halo_sources:
+        for row_offset, column_offset in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            neighbor = (key[0] + row_offset, key[1] + column_offset)
+            latitude = south + neighbor[0] * lat_step
+            longitude = west + neighbor[1] * lon_step
+            if neighbor in cells or not (south <= latitude <= north and west <= longitude <= east):
+                continue
+            cells[neighbor] = {
+                "observer_id": "RF_EVIDENCE",
+                "path_loss_db": 151.0,
+                "band": "marginal",
+                "terrain_band": None,
+                "row": neighbor[0],
+                "column": neighbor[1],
+                "lat_step": lat_step,
+                "lon_step": lon_step,
+                **evidence_properties(bucket, "direct_evidence_halo"),
+            }
+            halo_cells += 1
+
+    return {
+        "status": "applied",
+        "window_days": payload.get("metadata", {}).get("window_days"),
+        "input_samples": direct_samples + multihop_samples,
+        "direct_samples": direct_samples,
+        "multihop_samples": multihop_samples,
+        "evidence_cells": len(evidence),
+        "qualified_cells": qualified,
+        "reinforced_cells": reinforced,
+        "extended_cells": extended,
+        "direct_halo_cells": halo_cells,
+        "rules": {
+            "direct_minimum": 2,
+            "multihop_minimum": 3,
+            "multihop_weighted_support_minimum": 0.75,
+            "activity_creates_coverage": False,
+        },
+    }
+
+
 def cells_to_geojson(
     cells: dict[tuple[int, int], dict[str, Any]],
     bounds: tuple[float, float, float, float],
@@ -230,6 +377,12 @@ def cells_to_geojson(
                     "band": cell["band"],
                     "color": colors[cell["band"]],
                     "confidence": "modeled",
+                    "terrain_band": cell.get("terrain_band", cell["band"]),
+                    "evidence_role": cell.get("evidence_role"),
+                    "evidence_support_count": cell.get("evidence_support_count", 0),
+                    "direct_support_count": cell.get("direct_support_count", 0),
+                    "multihop_support_count": cell.get("multihop_support_count", 0),
+                    "weighted_support": cell.get("weighted_support", 0),
                 },
                 "geometry": {
                     "type": "Polygon",
@@ -364,6 +517,7 @@ def build(args: argparse.Namespace) -> Path:
     output_root = Path(args.output).resolve()
     terrain_dir = output_root / "terrain"
     sites = load_sites(args.observers_url)
+    reachability = fetch_json(args.reachability_url, timeout=180)
     for south, west in sorted(terrain_tiles(sites, args.radius_km)):
         ensure_terrain_tile(south, west, terrain_dir)
     cells: dict[tuple[int, int], dict[str, Any]] = {}
@@ -380,6 +534,9 @@ def build(args: argparse.Namespace) -> Path:
                 if existing is None or candidate["path_loss_db"] < existing["path_loss_db"]:
                     cells[key] = candidate
             site_results.append(result)
+    evidence_calibration = blend_reachability_evidence(
+        cells, reachability, args.bounds, args.cell_km
+    )
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     band_counts = {
         band: sum(cell["band"] == band for cell in cells.values())
@@ -409,10 +566,13 @@ def build(args: argparse.Namespace) -> Path:
         "collector_count": len(sites),
         "cell_count": len(cells),
         "band_counts": band_counts,
+        "evidence_calibration": evidence_calibration,
         "collectors": site_results,
         "disclaimer": (
-            "Terrain-based direct-link estimate. Buildings, foliage, interference, antenna "
-            "orientation, and installation quality are not modeled."
+            "Terrain-based direct-link estimate calibrated with repeated positioned RF "
+            "reception and weighted multihop reachability evidence. Activity alone never "
+            "creates coverage. Buildings, foliage, interference, antenna orientation, and "
+            "installation quality are not modeled."
         ),
     }
     raster, raster_width, raster_height = cells_to_png(cells, args.bounds)
@@ -427,6 +587,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", default="/var/lib/atlas/coverage")
     parser.add_argument(
         "--observers-url", default="http://127.0.0.1:18081/api/v1/observer-health"
+    )
+    parser.add_argument(
+        "--reachability-url",
+        default="http://127.0.0.1:18081/api/v1/coverage/reachability-surface?days=30",
     )
     parser.add_argument("--radius-km", type=float, default=80.0)
     parser.add_argument("--cell-km", type=float, default=1.0)

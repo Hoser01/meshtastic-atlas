@@ -358,7 +358,7 @@ function LegendContents() {
     <div className="help-legend">
       <span><i className="legend-swatch heatmap-lz" /><b>RF reachability heatmap</b><small>Purple → orange → green. Positioned nodes whose packets reached a registered collector; direct reception is weighted strongest and additional hops progressively less.</small></span>
       <span><i className="legend-swatch heatmap-lz" /><b>Activity heatmap</b><small>Purple → orange → green. Increasing concentration of recent packet activity around positioned nodes.</small></span>
-      <span><i className="legend-swatch predicted" /><b>Predicted direct RF coverage</b><small>Nightly cached terrain model using a generic 3 m collector antenna and 1.5 m client antenna. Purple is marginal, orange likely, and green strong. This is modeled—not measured—evidence.</small></span>
+      <span><i className="legend-swatch predicted" /><b>Predicted RF coverage</b><small>Nightly terrain model calibrated by repeated direct reception and weighted multihop reachability. Activity can raise confidence but cannot create coverage. Purple is marginal, orange likely, and green strong.</small></span>
     </div>
     <h3>MAP CONTROLS</h3>
     <div className="help-legend control-legend">
