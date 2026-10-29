@@ -85,7 +85,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.36", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.37", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -95,19 +95,40 @@ def create_app(
     )
     app.state.store = store
     app.state.broker = broker
-    summary_cache: tuple[float, list[dict[str, Any]]] = (0.0, [])
-    summary_cache_lock = threading.Lock()
+    response_cache: dict[str, tuple[float, Any]] = {}
+    response_cache_refreshing: set[str] = set()
+    response_cache_lock = threading.Lock()
+
+    def cached_response(key: str, ttl: float, loader: Any) -> Any:
+        """Return stale data immediately while one background thread refreshes it."""
+        now = time.monotonic()
+        with response_cache_lock:
+            cached = response_cache.get(key)
+            if cached and now - cached[0] < ttl:
+                return cached[1]
+            if cached:
+                if key not in response_cache_refreshing:
+                    response_cache_refreshing.add(key)
+
+                    def refresh() -> None:
+                        try:
+                            value = loader()
+                            with response_cache_lock:
+                                response_cache[key] = (time.monotonic(), value)
+                        finally:
+                            with response_cache_lock:
+                                response_cache_refreshing.discard(key)
+
+                    threading.Thread(target=refresh, daemon=True, name=f"cache-{key}").start()
+                return cached[1]
+        value = loader()
+        with response_cache_lock:
+            response_cache[key] = (time.monotonic(), value)
+        return value
 
     def cached_node_summaries(limit: int) -> list[dict[str, Any]]:
-        nonlocal summary_cache
-        now = time.monotonic()
-        with summary_cache_lock:
-            cached_at, cached_rows = summary_cache
-            if cached_rows and now - cached_at < 10:
-                return cached_rows[:limit]
-            rows = store.list_node_summaries(10000)
-            summary_cache = (now, rows)
-            return rows[:limit]
+        rows = cached_response("node-summaries", 60, lambda: store.list_node_summaries(10000))
+        return rows[:limit]
 
     def apply_configured_observer_position(row: dict[str, Any]) -> dict[str, Any]:
         """Use trusted site coordinates when an observer has not sent a position packet."""
@@ -148,10 +169,13 @@ def create_app(
 
     @app.get("/api/v1/observers")
     def observers() -> list[dict[str, Any]]:
-        rows = store.list_observers()
-        for row in rows:
-            row.update(observer_config.get(row["observer_id"], {}))
-        return rows
+        def load() -> list[dict[str, Any]]:
+            rows = store.list_observers()
+            for row in rows:
+                row.update(observer_config.get(row["observer_id"], {}))
+            return rows
+
+        return cached_response("observers", 60, load)
 
     @app.get("/api/v1/observer-health")
     def observer_health() -> list[dict[str, Any]]:
@@ -211,7 +235,9 @@ def create_app(
 
     @app.get("/api/v1/activity/timeline")
     def activity_timeline(minutes: int = Query(15, ge=5, le=120)) -> dict[str, Any]:
-        return store.activity_timeline(minutes)
+        return cached_response(
+            f"activity-timeline-{minutes}", 15, lambda: store.activity_timeline(minutes)
+        )
 
     @app.get("/api/v1/nodes")
     def nodes(limit: int = Query(500, ge=1, le=5000)) -> list[dict[str, Any]]:
@@ -285,7 +311,7 @@ def create_app(
 
     @app.get("/api/v1/quality")
     def quality() -> dict[str, Any]:
-        return store.quality_metrics()
+        return cached_response("quality", 60, store.quality_metrics)
 
     @app.get("/api/v1/quality/gateways")
     def quality_gateways(hours: float = Query(24, gt=0, le=24 * 30)) -> list[dict[str, Any]]:
