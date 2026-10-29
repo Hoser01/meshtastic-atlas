@@ -1433,8 +1433,17 @@ class AtlasStore:
             "recently_heard_by": [dict(row) for row in heard_rows],
         }
 
-    def quality_metrics(self) -> dict[str, Any]:
-        """Summarize logical packets separately from per-gateway observations."""
+    def quality_metrics(self, hours: float | None = None) -> dict[str, Any]:
+        """Summarize logical packets and gateway observations for an optional window."""
+        day_cutoff = (
+            datetime.fromtimestamp(
+                datetime.now(timezone.utc).timestamp() - hours * 3600, timezone.utc
+            )
+            .isoformat()
+            .replace("+00:00", "Z")
+            if hours is not None
+            else "0000-01-01T00:00:00Z"
+        )
         with self.lock:
             packet_rows = self.connection.execute(
                 """
@@ -1446,7 +1455,8 @@ class AtlasStore:
                        json_extract(raw_event, '$.encrypted') AS encrypted,
                        observer_id, observed_at
                 FROM observations
-                WHERE json_extract(raw_event, '$.packet_id') IS NOT NULL
+                WHERE observed_at>=?
+                  AND json_extract(raw_event, '$.packet_id') IS NOT NULL
                   AND json_extract(raw_event, '$.from_node') IS NOT NULL
                 UNION ALL
                 SELECT json_extract(raw_event, '$.from_node'),
@@ -1457,13 +1467,17 @@ class AtlasStore:
                        json_extract(raw_event, '$.encrypted'),
                        observer_id, observed_at
                 FROM events
-                WHERE event_type='network_packet'
+                WHERE observed_at>=?
+                  AND event_type='network_packet'
                   AND json_extract(raw_event, '$.packet_id') IS NOT NULL
                   AND json_extract(raw_event, '$.from_node') IS NOT NULL
-                """
+                """,
+                (day_cutoff, day_cutoff),
             ).fetchall()
             connection_errors = self.connection.execute(
-                "SELECT count(*) FROM events WHERE event_type='observer_connection_error'"
+                """SELECT count(*) FROM events
+                   WHERE observed_at>=? AND event_type='observer_connection_error'""",
+                (day_cutoff,),
             ).fetchone()[0]
 
         packets: dict[tuple[int, int], list[sqlite3.Row]] = {}

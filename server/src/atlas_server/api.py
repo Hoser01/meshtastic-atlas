@@ -311,7 +311,7 @@ def create_app(
 
     @app.get("/api/v1/quality")
     def quality() -> dict[str, Any]:
-        return cached_response("quality", 60, store.quality_metrics)
+        return cached_response("quality", 60, lambda: store.quality_metrics(24))
 
     @app.get("/api/v1/quality/gateways")
     def quality_gateways(hours: float = Query(24, gt=0, le=24 * 30)) -> list[dict[str, Any]]:
