@@ -32,7 +32,7 @@ PREDICTION_COLORS = {
 
 
 def fetch_json(url: str, timeout: int = 60, attempts: int = 4) -> Any:
-    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.42"})
+    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.43"})
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -251,7 +251,7 @@ def ensure_terrain_tile(south: int, west: int, terrain_dir: Path) -> Path:
         if not href:
             raise RuntimeError(f"USGS did not return terrain for tile {south},{west}")
         tif_path = temp / "terrain.tif"
-        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.42"})
+        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.43"})
         with (
             urllib.request.urlopen(request, timeout=300) as response,
             tif_path.open("wb") as output,
