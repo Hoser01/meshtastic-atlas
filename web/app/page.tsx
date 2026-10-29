@@ -250,6 +250,15 @@ type PredictionMetadata = {
   cell_count: number; cell_km: number; collector_antenna_height_m: number;
   client_antenna_height_m: number; disclaimer: string;
   bounds: [number, number, number, number]; raster_width: number; raster_height: number;
+  coverage_opportunity_count?: number;
+  coverage_opportunity_disclaimer?: string;
+  coverage_opportunities?: Array<{
+    id: string; rank: number; latitude: number; longitude: number; score: number;
+    evidence_samples: number; observer_count: number; node_count: number;
+    nearest_predicted_coverage_km: number; surrounding_coverage_cells: number;
+    elevation_m?: number; terrain_considered?: boolean;
+    reason: string;
+  }>;
 };
 
 type ApiObserver = {
@@ -360,6 +369,7 @@ function LegendContents() {
       <span><i className="legend-swatch heatmap-lz" /><b>RF reachability heatmap</b><small>Purple → orange → green. Positioned nodes whose packets reached a registered collector; direct reception is weighted strongest and additional hops progressively less.</small></span>
       <span><i className="legend-swatch heatmap-lz" /><b>Activity heatmap</b><small>Purple → orange → green. Increasing concentration of recent packet activity around positioned nodes.</small></span>
       <span><i className="legend-swatch predicted" /><b>Predicted RF coverage</b><small>Nightly terrain model from collectors plus stable RF-active mesh anchors. Deep RF history calibrates the result and dense, corroborated multihop evidence can add a small marginal local footprint; activity alone cannot create coverage. Purple is marginal, orange likely, and green strong.</small></span>
+      <span><i className="legend-star">★</i><b>Coverage opportunity</b><small>Yellow · an uncovered, terrain-aware planning area where corroborated RF demand and nearby coverage suggest another well-placed node could strengthen the mesh. It is not an exact installation site.</small></span>
     </div>
     <h3>MAP CONTROLS</h3>
     <div className="help-legend control-legend">
@@ -375,6 +385,7 @@ export default function Home() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
   const markers = useRef<Marker[]>([]);
+  const coverageOpportunityMarkers = useRef<Marker[]>([]);
   const hoverPopup = useRef<Popup | null>(null);
   const layersPanel = useRef<HTMLDetailsElement>(null);
   const provenancePanel = useRef<HTMLDetailsElement>(null);
@@ -752,6 +763,40 @@ export default function Home() {
       paint: { "raster-opacity": 0.78, "raster-fade-duration": 0, "raster-resampling": "linear" },
     }, instance.getLayer("node-clusters") ? "node-clusters" : undefined);
   }, [mapReady, predictionMetadata]);
+
+  useEffect(() => {
+    coverageOpportunityMarkers.current.forEach((marker) => marker.remove());
+    coverageOpportunityMarkers.current = [];
+    if (!mapReady || !map.current || !showPrediction || !predictionMetadata) return;
+    for (const opportunity of predictionMetadata.coverage_opportunities ?? []) {
+      const element = document.createElement("button");
+      element.type = "button";
+      element.className = "coverage-opportunity-marker";
+      element.textContent = "★";
+      element.title = `Coverage opportunity ${opportunity.rank}`;
+      element.setAttribute("aria-label", `Coverage opportunity ${opportunity.rank}`);
+      const content = document.createElement("div");
+      content.className = "coverage-opportunity-popup";
+      const heading = document.createElement("strong");
+      heading.textContent = `COVERAGE OPPORTUNITY ${opportunity.rank}`;
+      const explanation = document.createElement("span");
+      explanation.textContent = opportunity.reason;
+      const evidence = document.createElement("small");
+      evidence.textContent = `${opportunity.observer_count} observers · ${opportunity.node_count} nodes · ${opportunity.nearest_predicted_coverage_km} km from predicted coverage${opportunity.elevation_m == null ? "" : ` · ${Math.round(opportunity.elevation_m)} m elevation`}`;
+      const caution = document.createElement("small");
+      caution.textContent = "Approximate study area—field survey and site permission required.";
+      content.append(heading, explanation, evidence, caution);
+      const marker = new Marker({ element, anchor: "center" })
+        .setLngLat([opportunity.longitude, opportunity.latitude])
+        .setPopup(new Popup({ offset: 16, closeButton: false, className: "coverage-opportunity-map-popup" }).setDOMContent(content))
+        .addTo(map.current);
+      coverageOpportunityMarkers.current.push(marker);
+    }
+    return () => {
+      coverageOpportunityMarkers.current.forEach((marker) => marker.remove());
+      coverageOpportunityMarkers.current = [];
+    };
+  }, [mapReady, predictionMetadata, showPrediction]);
 
   useEffect(() => {
     if (!qualityView) return;
@@ -1701,7 +1746,7 @@ export default function Home() {
         <div className="map-caption">
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>
           {showCoverage && <span title="Positioned nodes reaching registered ATLAS collectors; hop-weighted and inferred"><i className="legend-dot measured-dot" /> RF REACHABILITY · {coverageSurface?.metadata.node_count ?? 0} NODES · {coverageSurface?.metadata.sample_count ?? 0} SAMPLES</span>}
-          {showPrediction && predictionMetadata && <span title={predictionMetadata.disclaimer}><i className="legend-dot prediction-dot" /> PREDICTED · {predictionMetadata.collector_count} COLLECTORS · {predictionMetadata.secondary_anchor_count ?? 0} MESH ANCHORS · {predictionMetadata.cell_count} CELLS</span>}
+          {showPrediction && predictionMetadata && <span title={predictionMetadata.disclaimer}><i className="legend-dot prediction-dot" /> PREDICTED · {predictionMetadata.collector_count} COLLECTORS · {predictionMetadata.secondary_anchor_count ?? 0} MESH ANCHORS · {predictionMetadata.cell_count} CELLS · {predictionMetadata.coverage_opportunity_count ?? 0} OPPORTUNITIES</span>}
           {showHeatmap && <span><i className="legend-dot activity-dot" /> ACTIVITY · 24H</span>}
         </div>
 

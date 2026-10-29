@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,7 +31,7 @@ PREDICTION_COLORS = {
 
 
 def fetch_json(url: str, timeout: int = 60, attempts: int = 4) -> Any:
-    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.40"})
+    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.41"})
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -41,6 +41,20 @@ def fetch_json(url: str, timeout: int = 60, attempts: int = 4) -> Any:
                 raise
             time.sleep(2**attempt)
     raise RuntimeError("unreachable retry state")
+
+
+def fetch_elevation_m(latitude: float, longitude: float) -> float | None:
+    """Return a 3DEP point elevation for opportunity-site ranking."""
+    query = urllib.parse.urlencode({
+        "x": longitude, "y": latitude, "units": "Meters", "wkid": 4326,
+        "includeDate": "False",
+    })
+    try:
+        payload = fetch_json(f"https://epqs.nationalmap.gov/v1/json?{query}", timeout=30)
+        value = float(payload["value"])
+    except (KeyError, TypeError, ValueError, urllib.error.URLError, urllib.error.HTTPError):
+        return None
+    return value if math.isfinite(value) and value > -1000 else None
 
 
 def load_sites(url: str) -> list[dict[str, Any]]:
@@ -226,7 +240,7 @@ def ensure_terrain_tile(south: int, west: int, terrain_dir: Path) -> Path:
         if not href:
             raise RuntimeError(f"USGS did not return terrain for tile {south},{west}")
         tif_path = temp / "terrain.tif"
-        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.40"})
+        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.41"})
         with urllib.request.urlopen(request, timeout=300) as response, tif_path.open("wb") as output:
             shutil.copyfileobj(response, output)
 
@@ -500,6 +514,164 @@ def blend_reachability_evidence(
     }
 
 
+def recommend_coverage_opportunities(
+    cells: dict[tuple[int, int], dict[str, Any]],
+    payload: dict[str, Any],
+    bounds: tuple[float, float, float, float],
+    cell_km: float,
+    maximum: int = 10,
+    minimum_separation_km: float = 25.0,
+    elevation_lookup: Callable[[float, float], float | None] | None = None,
+) -> list[dict[str, Any]]:
+    """Find approximate, terrain-aware planning areas supported by RF evidence."""
+    west, south, east, north = bounds
+    lat_step = cell_km / 111.32
+    lon_step = cell_km / (111.32 * math.cos(math.radians((south + north) / 2)))
+    row_count = math.ceil((north - south) / lat_step)
+    column_count = math.ceil((east - west) / lon_step)
+    evidence: dict[tuple[int, int], dict[str, Any]] = {}
+    for feature in payload.get("features", []):
+        geometry = feature.get("geometry", {})
+        properties = feature.get("properties", {})
+        coordinates = geometry.get("coordinates")
+        if geometry.get("type") != "Point" or not isinstance(coordinates, list) or len(coordinates) < 2:
+            continue
+        longitude, latitude = coordinates[:2]
+        if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
+            continue
+        if not (south <= latitude <= north and west <= longitude <= east):
+            continue
+        key = (
+            math.floor((latitude - south) / lat_step),
+            math.floor((longitude - west) / lon_step),
+        )
+        bucket = evidence.setdefault(
+            key, {"samples": 0, "weight": 0.0, "observers": set(), "nodes": set()}
+        )
+        bucket["samples"] += 1
+        bucket["weight"] += max(0.0, min(1.0, float(properties.get("weight") or 0)))
+        bucket["observers"].add(str(properties.get("observer_id") or "UNKNOWN"))
+        bucket["nodes"].add(str(properties.get("transmitter_node") or "UNKNOWN"))
+
+    candidates: dict[tuple[int, int], dict[str, Any]] = {}
+    influence_radius = 10
+    for (row, column), bucket in evidence.items():
+        if bucket["samples"] < 3 or bucket["weight"] < 0.75 or len(bucket["observers"]) < 2:
+            continue
+        source_strength = min(18.0, bucket["weight"]) + math.log1p(bucket["samples"])
+        for row_offset in range(-influence_radius, influence_radius + 1):
+            for column_offset in range(-influence_radius, influence_radius + 1):
+                distance = math.hypot(row_offset, column_offset)
+                if not 2 <= distance <= influence_radius:
+                    continue
+                key = (row + row_offset, column + column_offset)
+                if (
+                    key in cells
+                    or not 0 <= key[0] < row_count
+                    or not 0 <= key[1] < column_count
+                ):
+                    continue
+                candidate = candidates.setdefault(
+                    key,
+                    {"influence": 0.0, "samples": 0, "observers": set(), "nodes": set()},
+                )
+                candidate["influence"] += source_strength / (1 + distance)
+                candidate["samples"] += bucket["samples"]
+                candidate["observers"].update(bucket["observers"])
+                candidate["nodes"].update(bucket["nodes"])
+
+    scored = []
+    coverage_radius = 12
+    for key, candidate in candidates.items():
+        nearest_coverage = float("inf")
+        surrounding_coverage = 0
+        quadrants: set[tuple[int, int]] = set()
+        for row_offset in range(-coverage_radius, coverage_radius + 1):
+            for column_offset in range(-coverage_radius, coverage_radius + 1):
+                distance = math.hypot(row_offset, column_offset)
+                if distance > coverage_radius or (key[0] + row_offset, key[1] + column_offset) not in cells:
+                    continue
+                nearest_coverage = min(nearest_coverage, distance)
+                surrounding_coverage += 1
+                quadrants.add((1 if row_offset >= 0 else -1, 1 if column_offset >= 0 else -1))
+        if (
+            candidate["influence"] < 3.0
+            or len(candidate["observers"]) < 2
+            or len(candidate["nodes"]) < 2
+            or not 2 <= nearest_coverage <= coverage_radius
+            or len(quadrants) < 2
+        ):
+            continue
+        latitude = south + (key[0] + 0.5) * lat_step
+        longitude = west + (key[1] + 0.5) * lon_step
+        score = (
+            candidate["influence"]
+            + min(6, len(candidate["observers"])) * 1.5
+            + min(12, len(candidate["nodes"])) * 0.45
+            + len(quadrants) * 2
+            + min(40, surrounding_coverage) * 0.08
+        )
+        scored.append({
+            "latitude": round(latitude, 5),
+            "longitude": round(longitude, 5),
+            "score": round(score, 2),
+            "evidence_samples": candidate["samples"],
+            "observer_count": len(candidate["observers"]),
+            "node_count": len(candidate["nodes"]),
+            "nearest_predicted_coverage_km": round(nearest_coverage * cell_km, 1),
+            "surrounding_coverage_cells": surrounding_coverage,
+            "reason": "Uncovered planning area near corroborated RF activity and adjacent coverage",
+        })
+
+    selected: list[dict[str, Any]] = []
+    for candidate in sorted(scored, key=lambda item: item["score"], reverse=True):
+        # Search a small local set rather than implying the grid-cell center is the
+        # best installation point. Prefer higher 3DEP terrain without abandoning
+        # the evidence-supported gap that made the area useful.
+        local = sorted(
+            (
+                option for option in scored
+                if haversine_km(
+                    (candidate["latitude"], candidate["longitude"]),
+                    (option["latitude"], option["longitude"]),
+                ) <= 4.5
+                and option["score"] >= candidate["score"] * 0.82
+            ),
+            key=lambda item: item["score"],
+            reverse=True,
+        )[:5]
+        if elevation_lookup is not None:
+            for option in local:
+                if "elevation_m" not in option:
+                    elevation = elevation_lookup(option["latitude"], option["longitude"])
+                    if elevation is not None:
+                        option["elevation_m"] = round(elevation, 1)
+            measured = [option["elevation_m"] for option in local if "elevation_m" in option]
+            if measured:
+                floor = min(measured)
+                candidate = max(
+                    local,
+                    key=lambda option: option["score"]
+                    + min(8.0, max(0.0, option.get("elevation_m", floor) - floor) / 20.0),
+                )
+        position = (candidate["latitude"], candidate["longitude"])
+        if any(
+            haversine_km(position, (existing["latitude"], existing["longitude"]))
+            < minimum_separation_km
+            for existing in selected
+        ):
+            continue
+        selected.append({
+            **candidate,
+            "id": f"OPPORTUNITY_{len(selected) + 1}",
+            "rank": len(selected) + 1,
+            "terrain_considered": elevation_lookup is not None,
+        })
+        if len(selected) >= maximum:
+            break
+    return selected
+
+
 def cells_to_geojson(
     cells: dict[tuple[int, int], dict[str, Any]],
     bounds: tuple[float, float, float, float],
@@ -719,6 +891,15 @@ def build(args: argparse.Namespace) -> Path:
     evidence_calibration = blend_reachability_evidence(
         cells, reachability, args.bounds, args.cell_km
     )
+    coverage_opportunities = recommend_coverage_opportunities(
+        cells,
+        reachability,
+        args.bounds,
+        args.cell_km,
+        maximum=args.coverage_opportunity_limit,
+        minimum_separation_km=args.coverage_opportunity_separation_km,
+        elevation_lookup=fetch_elevation_m,
+    )
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     band_counts = {
         band: sum(cell["band"] == band for cell in cells.values())
@@ -751,6 +932,13 @@ def build(args: argparse.Namespace) -> Path:
         "cell_count": len(cells),
         "band_counts": band_counts,
         "evidence_calibration": evidence_calibration,
+        "coverage_opportunity_count": len(coverage_opportunities),
+        "coverage_opportunities": coverage_opportunities,
+        "coverage_opportunity_disclaimer": (
+            "Approximate terrain-aware planning areas derived from coverage gaps, local "
+            "3DEP elevation, and corroborated RF evidence. Field survey, permission, power, "
+            "and backhaul review are required before selecting an installation site."
+        ),
         "collectors": site_results,
         "secondary_anchors": secondary_results,
         "disclaimer": (
@@ -785,6 +973,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--secondary-radius-km", type=float, default=30.0)
     parser.add_argument("--secondary-anchor-limit", type=int, default=20)
     parser.add_argument("--secondary-minimum-separation-km", type=float, default=5.0)
+    parser.add_argument("--coverage-opportunity-limit", type=int, default=10)
+    parser.add_argument("--coverage-opportunity-separation-km", type=float, default=25.0)
     parser.add_argument("--cell-km", type=float, default=1.0)
     parser.add_argument("--bounds", type=float, nargs=4, default=DEFAULT_BOUNDS,
                         metavar=("WEST", "SOUTH", "EAST", "NORTH"))

@@ -1,3 +1,5 @@
+import math
+
 from atlas_server.coverage_builder import (
     aggregate_points,
     blend_reachability_evidence,
@@ -5,6 +7,7 @@ from atlas_server.coverage_builder import (
     cells_to_png,
     classify_path_loss,
     parse_ano,
+    recommend_coverage_opportunities,
     sdf_name,
     select_secondary_anchors,
     terrain_tiles,
@@ -172,3 +175,42 @@ def test_secondary_anchors_require_stability_support_and_geographic_separation()
     assert anchors[0]["support_count"] == 8
     assert anchors[0]["day_count"] == 2
     assert anchors[0]["position_spread_km"] == 0
+
+
+def test_coverage_opportunities_are_uncovered_capped_and_evidence_supported():
+    bounds = (-95.0, 36.0, -93.0, 38.0)
+    cell_km = 1.0
+    lat_step = cell_km / 111.32
+    lon_step = cell_km / (111.32 * math.cos(math.radians(37.0)))
+    evidence_row, evidence_column = 100, 100
+    latitude = bounds[1] + (evidence_row + 0.5) * lat_step
+    longitude = bounds[0] + (evidence_column + 0.5) * lon_step
+    features = [{
+        "type": "Feature",
+        "properties": {
+            "observer_id": f"OBS{index % 2}",
+            "transmitter_node": 100 + index % 3,
+            "hops": 2,
+            "weight": 0.6,
+        },
+        "geometry": {"type": "Point", "coordinates": [longitude, latitude]},
+    } for index in range(12)]
+    cells = {}
+    for row_offset, column_offset in ((-4, 0), (4, 0), (0, -4), (0, 4)):
+        key = (evidence_row + row_offset, evidence_column + column_offset)
+        cells[key] = {"band": "marginal"}
+    opportunities = recommend_coverage_opportunities(
+        cells,
+        {"type": "FeatureCollection", "features": features},
+        bounds,
+        cell_km,
+        maximum=2,
+        minimum_separation_km=5,
+        elevation_lookup=lambda latitude, longitude: 300 + latitude + longitude,
+    )
+    assert 1 <= len(opportunities) <= 2
+    assert all(item["observer_count"] == 2 for item in opportunities)
+    assert all(item["node_count"] == 3 for item in opportunities)
+    assert all(item["nearest_predicted_coverage_km"] >= 2 for item in opportunities)
+    assert all(item["terrain_considered"] is True for item in opportunities)
+    assert all(isinstance(item.get("elevation_m"), float) for item in opportunities)
