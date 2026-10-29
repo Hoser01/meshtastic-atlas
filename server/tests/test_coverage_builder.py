@@ -112,6 +112,29 @@ def test_repeated_direct_evidence_reinforces_and_adds_conservative_halo():
     assert center["band"] == "likely"
 
 
+def test_dense_multihop_evidence_adds_only_a_marginal_local_footprint():
+    bounds = (-95.0, 36.0, -93.0, 38.0)
+    cells = {}
+    features = [{
+        "type": "Feature",
+        "properties": {
+            "observer_id": f"OBS{index % 2}", "transmitter_node": 100,
+            "hops": 2, "weight": 0.4,
+        },
+        "geometry": {"type": "Point", "coordinates": [-94.0, 37.0]},
+    } for index in range(6)]
+    result = blend_reachability_evidence(
+        cells,
+        {"type": "FeatureCollection", "features": features, "metadata": {"window_days": 30}},
+        bounds,
+        1.0,
+    )
+    assert result["extended_cells"] == 1
+    assert result["reachability_halo_cells"] == 8
+    assert len(cells) == 9
+    assert {cell["band"] for cell in cells.values()} == {"marginal"}
+
+
 def test_secondary_anchors_require_stability_support_and_geographic_separation():
     def features(node_num, longitude, latitude, count=8, observer_count=2, moving=False):
         return [{

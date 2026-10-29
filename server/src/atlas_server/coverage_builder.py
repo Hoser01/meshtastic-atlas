@@ -31,7 +31,7 @@ PREDICTION_COLORS = {
 
 
 def fetch_json(url: str, timeout: int = 60, attempts: int = 4) -> Any:
-    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.39"})
+    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.40"})
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -226,7 +226,7 @@ def ensure_terrain_tile(south: int, west: int, terrain_dir: Path) -> Path:
         if not href:
             raise RuntimeError(f"USGS did not return terrain for tile {south},{west}")
         tif_path = temp / "terrain.tif"
-        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.39"})
+        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.40"})
         with urllib.request.urlopen(request, timeout=300) as response, tif_path.open("wb") as output:
             shutil.copyfileobj(response, output)
 
@@ -373,6 +373,7 @@ def blend_reachability_evidence(
 
     reinforced = extended = halo_cells = qualified = 0
     direct_halo_sources: list[tuple[tuple[int, int], dict[str, Any]]] = []
+    reachability_halo_sources: list[tuple[tuple[int, int], dict[str, Any]]] = []
     rank = {"marginal": 0, "likely": 1, "strong": 2}
     bands = ("marginal", "likely", "strong")
 
@@ -423,6 +424,12 @@ def blend_reachability_evidence(
 
         if bucket["direct_count"] >= 3:
             direct_halo_sources.append((key, bucket))
+        elif (
+            bucket["multihop_count"] >= 6
+            and bucket["weighted_support"] >= 1.5
+            and len(bucket["observer_ids"]) >= 2
+        ):
+            reachability_halo_sources.append((key, bucket))
 
     # Repeated direct reception supports a conservative one-cell local prediction.
     for key, bucket in direct_halo_sources:
@@ -445,6 +452,31 @@ def blend_reachability_evidence(
             }
             halo_cells += 1
 
+    reachability_halo_cells = 0
+    for key, bucket in reachability_halo_sources:
+        for row_offset, column_offset in (
+            (-1, -1), (-1, 0), (-1, 1),
+            (0, -1), (0, 1),
+            (1, -1), (1, 0), (1, 1),
+        ):
+            neighbor = (key[0] + row_offset, key[1] + column_offset)
+            latitude = south + neighbor[0] * lat_step
+            longitude = west + neighbor[1] * lon_step
+            if neighbor in cells or not (south <= latitude <= north and west <= longitude <= east):
+                continue
+            cells[neighbor] = {
+                "observer_id": "RF_EVIDENCE",
+                "path_loss_db": 151.0,
+                "band": "marginal",
+                "terrain_band": None,
+                "row": neighbor[0],
+                "column": neighbor[1],
+                "lat_step": lat_step,
+                "lon_step": lon_step,
+                **evidence_properties(bucket, "reachability_evidence_halo"),
+            }
+            reachability_halo_cells += 1
+
     return {
         "status": "applied",
         "window_days": payload.get("metadata", {}).get("window_days"),
@@ -456,10 +488,13 @@ def blend_reachability_evidence(
         "reinforced_cells": reinforced,
         "extended_cells": extended,
         "direct_halo_cells": halo_cells,
+        "reachability_halo_cells": reachability_halo_cells,
         "rules": {
             "direct_minimum": 2,
             "multihop_minimum": 3,
             "multihop_weighted_support_minimum": 0.75,
+            "multihop_halo_minimum": 6,
+            "multihop_halo_weighted_support_minimum": 1.5,
             "activity_creates_coverage": False,
         },
     }
@@ -741,12 +776,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--reachability-url",
-        default="http://127.0.0.1:18081/api/v1/coverage/reachability-surface?days=30",
+        default=(
+            "http://127.0.0.1:18081/api/v1/coverage/"
+            "reachability-surface?days=30&limit=350000"
+        ),
     )
     parser.add_argument("--radius-km", type=float, default=80.0)
     parser.add_argument("--secondary-radius-km", type=float, default=30.0)
-    parser.add_argument("--secondary-anchor-limit", type=int, default=8)
-    parser.add_argument("--secondary-minimum-separation-km", type=float, default=12.0)
+    parser.add_argument("--secondary-anchor-limit", type=int, default=20)
+    parser.add_argument("--secondary-minimum-separation-km", type=float, default=5.0)
     parser.add_argument("--cell-km", type=float, default=1.0)
     parser.add_argument("--bounds", type=float, nargs=4, default=DEFAULT_BOUNDS,
                         metavar=("WEST", "SOUTH", "EAST", "NORTH"))

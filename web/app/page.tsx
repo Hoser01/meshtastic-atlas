@@ -359,7 +359,7 @@ function LegendContents() {
     <div className="help-legend">
       <span><i className="legend-swatch heatmap-lz" /><b>RF reachability heatmap</b><small>Purple → orange → green. Positioned nodes whose packets reached a registered collector; direct reception is weighted strongest and additional hops progressively less.</small></span>
       <span><i className="legend-swatch heatmap-lz" /><b>Activity heatmap</b><small>Purple → orange → green. Increasing concentration of recent packet activity around positioned nodes.</small></span>
-      <span><i className="legend-swatch predicted" /><b>Predicted RF coverage</b><small>Nightly terrain model from collectors plus a limited set of stable, RF-active mesh anchors. Repeated direct reception and weighted multihop reachability calibrate the result; activity alone cannot create coverage. Purple is marginal, orange likely, and green strong.</small></span>
+      <span><i className="legend-swatch predicted" /><b>Predicted RF coverage</b><small>Nightly terrain model from collectors plus stable RF-active mesh anchors. Deep RF history calibrates the result and dense, corroborated multihop evidence can add a small marginal local footprint; activity alone cannot create coverage. Purple is marginal, orange likely, and green strong.</small></span>
     </div>
     <h3>MAP CONTROLS</h3>
     <div className="help-legend control-legend">

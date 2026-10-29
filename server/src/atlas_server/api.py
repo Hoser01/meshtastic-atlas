@@ -85,7 +85,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.39", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.40", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -502,11 +502,14 @@ def create_app(
         }}
 
     @app.get("/api/v1/coverage/reachability-surface")
-    def reachability_surface(days: float = Query(30, gt=0, le=90)) -> dict[str, Any]:
+    def reachability_surface(
+        days: float = Query(30, gt=0, le=90),
+        limit: int = Query(20000, ge=1000, le=500000),
+    ) -> dict[str, Any]:
         """Positioned endpoints known to have reached registered collectors over RF."""
         now = datetime.now(timezone.utc)
         latest: dict[tuple[str, int, int], dict[str, Any]] = {}
-        for row in store.list_reachability_evidence(20000):
+        for row in store.list_reachability_evidence(limit):
             if row["observer_id"] not in observer_config or row["observer_id"].startswith("MQTT:"):
                 continue
             observed = datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
@@ -536,6 +539,7 @@ def create_app(
             "node_count": len({row["transmitter_node"] for row in latest.values()}),
             "observer_count": len({row["observer_id"] for row in latest.values()}),
             "window_days": days,
+            "raw_observation_limit": limit,
         }}
 
     @app.get("/api/v1/coverage/predicted", response_class=FileResponse)
