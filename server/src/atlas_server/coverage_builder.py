@@ -15,6 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -625,6 +626,13 @@ def recommend_coverage_opportunities(
 
     selected: list[dict[str, Any]] = []
     for candidate in sorted(scored, key=lambda item: item["score"], reverse=True):
+        base_position = (candidate["latitude"], candidate["longitude"])
+        if any(
+            haversine_km(base_position, (existing["latitude"], existing["longitude"]))
+            < minimum_separation_km
+            for existing in selected
+        ):
+            continue
         # Search a small local set rather than implying the grid-cell center is the
         # best installation point. Prefer higher 3DEP terrain without abandoning
         # the evidence-supported gap that made the area useful.
@@ -641,9 +649,13 @@ def recommend_coverage_opportunities(
             reverse=True,
         )[:5]
         if elevation_lookup is not None:
-            for option in local:
-                if "elevation_m" not in option:
-                    elevation = elevation_lookup(option["latitude"], option["longitude"])
+            unresolved = [option for option in local if "elevation_m" not in option]
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                elevations = executor.map(
+                    lambda option: elevation_lookup(option["latitude"], option["longitude"]),
+                    unresolved,
+                )
+                for option, elevation in zip(unresolved, elevations, strict=True):
                     if elevation is not None:
                         option["elevation_m"] = round(elevation, 1)
             measured = [option["elevation_m"] for option in local if "elevation_m" in option]
