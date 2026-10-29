@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import os
@@ -22,10 +23,15 @@ DEFAULT_BOUNDS = (-94.85, 35.82, -92.85, 37.80)
 MODEL_NAME = "SPLAT Longley-Rice ITM"
 MODEL_VERSION = "1.4.2-olditm"
 TERRAIN_SOURCE = "USGS National Map 3DEP"
+PREDICTION_COLORS = {
+    "strong": (69, 224, 111, 108),
+    "likely": (255, 122, 26, 92),
+    "marginal": (165, 107, 255, 72),
+}
 
 
 def fetch_json(url: str, timeout: int = 60, attempts: int = 4) -> Any:
-    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.35"})
+    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.36"})
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -109,7 +115,7 @@ def ensure_terrain_tile(south: int, west: int, terrain_dir: Path) -> Path:
         if not href:
             raise RuntimeError(f"USGS did not return terrain for tile {south},{west}")
         tif_path = temp / "terrain.tif"
-        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.35"})
+        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.36"})
         with urllib.request.urlopen(request, timeout=300) as response, tif_path.open("wb") as output:
             shutil.copyfileobj(response, output)
 
@@ -238,6 +244,33 @@ def cells_to_geojson(
     return {"type": "FeatureCollection", "features": features, "metadata": metadata}
 
 
+def cells_to_png(
+    cells: dict[tuple[int, int], dict[str, Any]],
+    bounds: tuple[float, float, float, float],
+) -> tuple[bytes, int, int]:
+    """Render the modeled grid once so browsers do not construct thousands of polygons."""
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - deployment validation handles this
+        raise RuntimeError("coverage build requires Pillow") from exc
+    if not cells:
+        raise RuntimeError("coverage model produced no publishable cells")
+    west, south, east, north = bounds
+    sample = next(iter(cells.values()))
+    width = max(1, math.ceil((east - west) / sample["lon_step"]))
+    height = max(1, math.ceil((north - south) / sample["lat_step"]))
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    pixels = image.load()
+    for cell in cells.values():
+        x = cell["column"]
+        y = height - 1 - cell["row"]
+        if 0 <= x < width and 0 <= y < height:
+            pixels[x, y] = PREDICTION_COLORS[cell["band"]]
+    output = io.BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue(), width, height
+
+
 def run_site(
     site: dict[str, Any],
     terrain_dir: Path,
@@ -294,7 +327,11 @@ def run_site(
 
 
 def publish_build(
-    output_root: Path, payload: dict[str, Any], metadata: dict[str, Any], keep: int = 3
+    output_root: Path,
+    payload: dict[str, Any],
+    metadata: dict[str, Any],
+    raster: bytes,
+    keep: int = 3,
 ) -> Path:
     builds = output_root / "builds"
     builds.mkdir(parents=True, exist_ok=True)
@@ -307,9 +344,12 @@ def publish_build(
     (build / "metadata.json").write_text(
         json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
     )
+    (build / "predicted.png").write_bytes(raster)
     # Validate both files before atomically publishing the new build.
     json.loads((build / "predicted.geojson").read_text(encoding="utf-8"))
     json.loads((build / "metadata.json").read_text(encoding="utf-8"))
+    if not (build / "predicted.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
+        raise RuntimeError("invalid prediction raster")
     temporary_link = output_root / ".current-new"
     temporary_link.unlink(missing_ok=True)
     temporary_link.symlink_to(build.relative_to(output_root), target_is_directory=True)
@@ -375,8 +415,11 @@ def build(args: argparse.Namespace) -> Path:
             "orientation, and installation quality are not modeled."
         ),
     }
+    raster, raster_width, raster_height = cells_to_png(cells, args.bounds)
+    metadata["raster_width"] = raster_width
+    metadata["raster_height"] = raster_height
     payload = cells_to_geojson(cells, args.bounds, metadata)
-    return publish_build(output_root, payload, metadata)
+    return publish_build(output_root, payload, metadata, raster)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

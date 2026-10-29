@@ -21,7 +21,6 @@ import {
   Search,
   Signal,
   SlidersHorizontal,
-  Upload,
   X,
   Zap,
 } from "lucide-react";
@@ -245,14 +244,11 @@ type CoverageSurface = {
   metadata: { sample_count: number; node_count: number; observer_count: number; window_days: number };
 };
 
-type PredictionSurface = {
-  type: "FeatureCollection";
-  features: Array<{ type: "Feature"; properties: Record<string, number | string | null>; geometry: { type: "Polygon"; coordinates: number[][][] } }>;
-  metadata: {
-    generated_at: string; model: string; model_version: string; collector_count: number;
-    cell_count: number; cell_km: number; collector_antenna_height_m: number;
-    client_antenna_height_m: number; disclaimer: string;
-  };
+type PredictionMetadata = {
+  generated_at: string; model: string; model_version: string; collector_count: number;
+  cell_count: number; cell_km: number; collector_antenna_height_m: number;
+  client_antenna_height_m: number; disclaimer: string;
+  bounds: [number, number, number, number]; raster_width: number; raster_height: number;
 };
 
 type ApiObserver = {
@@ -379,7 +375,6 @@ export default function Home() {
   const map = useRef<MapLibreMap | null>(null);
   const markers = useRef<Marker[]>([]);
   const hoverPopup = useRef<Popup | null>(null);
-  const predictionInput = useRef<HTMLInputElement>(null);
   const layersPanel = useRef<HTMLDetailsElement>(null);
   const provenancePanel = useRef<HTMLDetailsElement>(null);
   const locationWarningTimer = useRef<number | undefined>(undefined);
@@ -396,7 +391,7 @@ export default function Home() {
   const [liveNodes, setLiveNodes] = useState<MeshNode[]>([]);
   const [positionHistory, setPositionHistory] = useState<ApiNode[]>([]);
   const [coverageSurface, setCoverageSurface] = useState<CoverageSurface | null>(null);
-  const [predictionSurface, setPredictionSurface] = useState<PredictionSurface | null>(null);
+  const [predictionMetadata, setPredictionMetadata] = useState<PredictionMetadata | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [timelineData, setTimelineData] = useState<TimelineData | null>(null);
@@ -716,18 +711,18 @@ export default function Home() {
   }, [showCoverage, showHeatmap]);
 
   useEffect(() => {
-    if (!showPrediction || predictionSurface) return;
+    if (!showPrediction || predictionMetadata) return;
     const base = (process.env.NEXT_PUBLIC_ATLAS_API_URL || window.location.origin).replace(/\/$/, "");
     const controller = new AbortController();
-    fetch(`${base}/api/v1/coverage/predicted`, { signal: controller.signal })
+    fetch(`${base}/api/v1/coverage/predicted/metadata`, { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error(`prediction service returned ${response.status}`);
-        return response.json() as Promise<PredictionSurface>;
+        return response.json() as Promise<PredictionMetadata>;
       })
-      .then((surface) => {
-        setPredictionSurface(surface);
-        const date = new Date(surface.metadata.generated_at).toLocaleDateString();
-        setPredictionName(`${surface.metadata.model} · ${date}`);
+      .then((metadata) => {
+        setPredictionMetadata(metadata);
+        const date = new Date(metadata.generated_at).toLocaleDateString();
+        setPredictionName(`${metadata.model} · ${date}`);
         setMapError(null);
       })
       .catch((error) => {
@@ -736,13 +731,26 @@ export default function Home() {
         }
       });
     return () => controller.abort();
-  }, [predictionSurface, showPrediction]);
+  }, [predictionMetadata, showPrediction]);
 
   useEffect(() => {
-    if (!mapReady || !map.current || !predictionSurface) return;
-    const source = map.current.getSource("terrain-prediction") as GeoJSONSource | undefined;
-    source?.setData(predictionSurface as never);
-  }, [mapReady, predictionSurface]);
+    if (!mapReady || !map.current || !predictionMetadata) return;
+    const instance = map.current;
+    if (instance.getLayer("terrain-prediction-fill")) instance.removeLayer("terrain-prediction-fill");
+    if (instance.getSource("terrain-prediction")) instance.removeSource("terrain-prediction");
+    const [west, south, east, north] = predictionMetadata.bounds;
+    const base = (process.env.NEXT_PUBLIC_ATLAS_API_URL || window.location.origin).replace(/\/$/, "");
+    instance.addSource("terrain-prediction", {
+      type: "image",
+      url: `${base}/api/v1/coverage/predicted.png?v=${encodeURIComponent(predictionMetadata.generated_at)}`,
+      coordinates: [[west, north], [east, north], [east, south], [west, south]],
+    });
+    instance.addLayer({
+      id: "terrain-prediction-fill", type: "raster", source: "terrain-prediction",
+      layout: { visibility: "visible" },
+      paint: { "raster-opacity": 0.78, "raster-fade-duration": 0, "raster-resampling": "linear" },
+    }, instance.getLayer("node-clusters") ? "node-clusters" : undefined);
+  }, [mapReady, predictionMetadata]);
 
   useEffect(() => {
     if (!qualityView) return;
@@ -869,7 +877,7 @@ export default function Home() {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showCoverage));
     }
     if (map.current.getLayer("rf-heatmap")) map.current.setLayoutProperty("rf-heatmap", "visibility", visibility(showHeatmap));
-    for (const layer of ["terrain-prediction-fill", "terrain-prediction-line"]) {
+    for (const layer of ["terrain-prediction-fill"]) {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showPrediction));
     }
     for (const layer of ["node-clusters", "node-cluster-count", "node-points-activity-glow", "node-points-wide", "node-points-hit"]) {
@@ -943,10 +951,6 @@ export default function Home() {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
       });
-      instance.addSource("terrain-prediction", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] },
-      });
       instance.addSource("atlas-nodes", {
         type: "geojson", cluster: true, clusterMaxZoom: 8, clusterRadius: 24,
         clusterProperties: {
@@ -1009,19 +1013,6 @@ export default function Home() {
         id: "node-points-hit", type: "circle", source: "atlas-nodes", maxzoom: 10.5,
         filter: ["!", ["has", "point_count"]],
         paint: { "circle-radius": 14, "circle-color": "rgba(0,0,0,0)", "circle-opacity": 0 },
-      });
-      instance.addLayer({
-        id: "terrain-prediction-fill", type: "fill", source: "terrain-prediction",
-        layout: { visibility: "none" },
-        paint: {
-          "fill-color": ["coalesce", ["get", "fill"], ["get", "color"], "#54e4fb"],
-          "fill-opacity": ["match", ["get", "band"], "strong", 0.30, "likely", 0.25, "marginal", 0.19, 0.22],
-        },
-      });
-      instance.addLayer({
-        id: "terrain-prediction-line", type: "line", source: "terrain-prediction",
-        layout: { visibility: "none" },
-        paint: { "line-color": ["coalesce", ["get", "stroke"], ["get", "color"], "#54e4fb"], "line-width": 0.7, "line-opacity": 0.42 },
       });
       instance.addLayer({
         id: "rf-coverage-heatmap", type: "heatmap", source: "rf-coverage-surface", maxzoom: 14,
@@ -1562,21 +1553,6 @@ export default function Home() {
     const candidate = nodeSummaries.find((node) => node.positioned && node.latitude !== null && node.longitude !== null && !isInvalidZeroPosition(node.longitude, node.latitude));
     if (candidate) selectNodeSummary(candidate);
   };
-  const importTerrainPrediction = async (file?: File) => {
-    if (!file || !map.current) return;
-    try {
-      const parsed = JSON.parse(await file.text()) as Parameters<GeoJSONSource["setData"]>[0];
-      if (parsed.type !== "FeatureCollection") throw new Error("Expected a GeoJSON FeatureCollection");
-      const source = map.current.getSource("terrain-prediction") as GeoJSONSource | undefined;
-      source?.setData(parsed);
-      setPredictionSurface(null);
-      setPredictionName(file.name);
-      setShowPrediction(true);
-      setMapError(null);
-    } catch (error) {
-      setMapError(error instanceof Error ? `Terrain prediction: ${error.message}` : "Invalid terrain prediction GeoJSON");
-    }
-  };
   const nodeLabel = (nodeNum?: number) => {
     if (nodeNum === undefined) return observerNodes[0]?.label ?? observers[0]?.observer_id ?? "OBSERVER";
     const id = `!${(nodeNum >>> 0).toString(16).padStart(8, "0")}`;
@@ -1687,12 +1663,10 @@ export default function Home() {
           <details ref={layersPanel} className="network-controls">
             <summary>MAP LAYERS <Layers3 size={12} /></summary>
             <button className="layer-row" onClick={() => setShowNodes(!showNodes)}><span>Nodes</span><span className={`mini-toggle ${showNodes ? "on" : ""}`}><i /></span></button>
-            <button className="layer-row" onClick={() => setShowPrediction(!showPrediction)}><span>Predicted Direct RF Coverage</span><span className={`mini-toggle ${showPrediction ? "on" : ""}`}><i /></span></button>
+            <button className="layer-row" onClick={() => setShowPrediction(!showPrediction)} title={predictionName ?? "Nightly cached terrain model"}><span>Predicted RF Coverage</span><span className={`mini-toggle ${showPrediction ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowCoverage(!showCoverage)}><span>RF Reachability Heatmap</span><span className={`mini-toggle ${showCoverage ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowHeatmap(!showHeatmap)}><span>Activity Heatmap</span><span className={`mini-toggle ${showHeatmap ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowLinks(!showLinks)}><span>Live Packet Paths</span><span className={`mini-toggle ${showLinks ? "on" : ""}`}><i /></span></button>
-            <button className="layer-row prediction-import" onClick={() => predictionInput.current?.click()} title={predictionName ?? "Nightly cached model"}><span>IMPORT MODEL OVERRIDE</span><Upload size={13} /></button>
-            <input ref={predictionInput} type="file" accept=".geojson,.json,application/geo+json,application/json" hidden onChange={(event) => void importTerrainPrediction(event.target.files?.[0])} />
           </details>
           <div className="node-list-summary"><span>{nodeListLoading ? "LOADING NODES" : `${filteredNodeSummaries.length} NODES`}</span><span>{nodeListLoading ? "PLEASE WAIT" : "LAST HEARD"}</span></div>
           <div className="network-node-list">
@@ -1726,7 +1700,7 @@ export default function Home() {
         <div className="map-caption">
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>
           {showCoverage && <span title="Positioned nodes reaching registered ATLAS collectors; hop-weighted and inferred"><i className="legend-dot measured-dot" /> RF REACHABILITY · {coverageSurface?.metadata.node_count ?? 0} NODES · {coverageSurface?.metadata.sample_count ?? 0} SAMPLES</span>}
-          {showPrediction && predictionSurface && <span title={predictionSurface.metadata.disclaimer}><i className="legend-dot prediction-dot" /> PREDICTED · {predictionSurface.metadata.collector_count} COLLECTORS · {predictionSurface.metadata.cell_count} CELLS</span>}
+          {showPrediction && predictionMetadata && <span title={predictionMetadata.disclaimer}><i className="legend-dot prediction-dot" /> PREDICTED · {predictionMetadata.collector_count} COLLECTORS · {predictionMetadata.cell_count} CELLS</span>}
           {showHeatmap && <span><i className="legend-dot activity-dot" /> ACTIVITY · 24H</span>}
         </div>
 

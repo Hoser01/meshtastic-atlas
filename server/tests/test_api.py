@@ -51,6 +51,7 @@ def test_cached_prediction_api(tmp_path) -> None:
     (prediction / "metadata.json").write_text(
         json.dumps({"status": "ok", "model": "test"}), encoding="utf-8"
     )
+    (prediction / "predicted.png").write_bytes(b"\x89PNG\r\n\x1a\nfixture")
     app = create_app(tmp_path / "atlas.db", prediction_dir=prediction)
     with TestClient(app) as client:
         response = client.get("/api/v1/coverage/predicted")
@@ -59,12 +60,17 @@ def test_cached_prediction_api(tmp_path) -> None:
         assert response.headers["cache-control"].startswith("public, max-age=3600")
         metadata = client.get("/api/v1/coverage/predicted/metadata")
         assert metadata.json() == {"status": "ok", "model": "test"}
+        raster = client.get("/api/v1/coverage/predicted.png")
+        assert raster.status_code == 200
+        assert raster.headers["content-type"] == "image/png"
+        assert raster.headers["cache-control"].startswith("public, max-age=86400")
 
 
 def test_cached_prediction_api_is_unavailable_before_first_build(tmp_path) -> None:
     app = create_app(tmp_path / "atlas.db", prediction_dir=tmp_path / "missing")
     with TestClient(app) as client:
         assert client.get("/api/v1/coverage/predicted").status_code == 503
+        assert client.get("/api/v1/coverage/predicted.png").status_code == 503
 
 
 def test_read_api_and_authenticated_ingestion(tmp_path) -> None:

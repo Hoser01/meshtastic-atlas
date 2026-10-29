@@ -1,6 +1,7 @@
 from atlas_server.coverage_builder import (
     aggregate_points,
     cells_to_geojson,
+    cells_to_png,
     classify_path_loss,
     parse_ano,
     sdf_name,
@@ -39,6 +40,10 @@ def test_aggregation_keeps_best_collector_per_cell():
     assert cell["observer_id"] == "TWO"
     payload = cells_to_geojson(cells, bounds, {"model": "test"})
     assert payload["features"][0]["properties"]["band"] == "strong"
+    raster, width, height = cells_to_png(cells, bounds)
+    assert raster.startswith(b"\x89PNG\r\n\x1a\n")
+    assert width > 0
+    assert height > 0
 
 
 def test_terrain_tile_names_and_radius_selection():

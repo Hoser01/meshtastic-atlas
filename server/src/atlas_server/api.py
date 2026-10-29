@@ -85,7 +85,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.35", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.36", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -533,6 +533,18 @@ def create_app(
             path,
             media_type="application/json",
             headers={"Cache-Control": "public, max-age=3600, stale-while-revalidate=86400"},
+        )
+
+    @app.get("/api/v1/coverage/predicted.png", response_class=FileResponse)
+    def predicted_coverage_raster() -> FileResponse:
+        """Serve the pre-rendered nightly prediction for fast map display."""
+        path = prediction_dir / "predicted.png"
+        if not path.is_file():
+            raise HTTPException(503, "predicted coverage raster has not been generated")
+        return FileResponse(
+            path,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400, stale-while-revalidate=604800"},
         )
 
     @app.get("/api/v1/activity")
