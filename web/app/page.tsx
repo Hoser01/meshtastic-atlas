@@ -246,6 +246,7 @@ type CoverageSurface = {
 
 type PredictionMetadata = {
   generated_at: string; model: string; model_version: string; collector_count: number;
+  secondary_anchor_count?: number;
   cell_count: number; cell_km: number; collector_antenna_height_m: number;
   client_antenna_height_m: number; disclaimer: string;
   bounds: [number, number, number, number]; raster_width: number; raster_height: number;
@@ -358,7 +359,7 @@ function LegendContents() {
     <div className="help-legend">
       <span><i className="legend-swatch heatmap-lz" /><b>RF reachability heatmap</b><small>Purple → orange → green. Positioned nodes whose packets reached a registered collector; direct reception is weighted strongest and additional hops progressively less.</small></span>
       <span><i className="legend-swatch heatmap-lz" /><b>Activity heatmap</b><small>Purple → orange → green. Increasing concentration of recent packet activity around positioned nodes.</small></span>
-      <span><i className="legend-swatch predicted" /><b>Predicted RF coverage</b><small>Nightly terrain model calibrated by repeated direct reception and weighted multihop reachability. Activity can raise confidence but cannot create coverage. Purple is marginal, orange likely, and green strong.</small></span>
+      <span><i className="legend-swatch predicted" /><b>Predicted RF coverage</b><small>Nightly terrain model from collectors plus a limited set of stable, RF-active mesh anchors. Repeated direct reception and weighted multihop reachability calibrate the result; activity alone cannot create coverage. Purple is marginal, orange likely, and green strong.</small></span>
     </div>
     <h3>MAP CONTROLS</h3>
     <div className="help-legend control-legend">
@@ -1700,7 +1701,7 @@ export default function Home() {
         <div className="map-caption">
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>
           {showCoverage && <span title="Positioned nodes reaching registered ATLAS collectors; hop-weighted and inferred"><i className="legend-dot measured-dot" /> RF REACHABILITY · {coverageSurface?.metadata.node_count ?? 0} NODES · {coverageSurface?.metadata.sample_count ?? 0} SAMPLES</span>}
-          {showPrediction && predictionMetadata && <span title={predictionMetadata.disclaimer}><i className="legend-dot prediction-dot" /> PREDICTED · {predictionMetadata.collector_count} COLLECTORS · {predictionMetadata.cell_count} CELLS</span>}
+          {showPrediction && predictionMetadata && <span title={predictionMetadata.disclaimer}><i className="legend-dot prediction-dot" /> PREDICTED · {predictionMetadata.collector_count} COLLECTORS · {predictionMetadata.secondary_anchor_count ?? 0} MESH ANCHORS · {predictionMetadata.cell_count} CELLS</span>}
           {showHeatmap && <span><i className="legend-dot activity-dot" /> ACTIVITY · 24H</span>}
         </div>
 

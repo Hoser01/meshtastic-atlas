@@ -6,6 +6,7 @@ from atlas_server.coverage_builder import (
     classify_path_loss,
     parse_ano,
     sdf_name,
+    select_secondary_anchors,
     terrain_tiles,
 )
 
@@ -109,3 +110,42 @@ def test_repeated_direct_evidence_reinforces_and_adds_conservative_halo():
     center = next(cell for cell in cells.values() if cell.get("evidence_role") == "reinforced")
     assert center["terrain_band"] == "marginal"
     assert center["band"] == "likely"
+
+
+def test_secondary_anchors_require_stability_support_and_geographic_separation():
+    def features(node_num, longitude, latitude, count=8, observer_count=2, moving=False):
+        return [{
+            "type": "Feature",
+            "properties": {
+                "observer_id": f"OBS{index % observer_count}",
+                "transmitter_node": node_num,
+                "hops": 2,
+                "weight": 0.5,
+                "age_seconds": (index % 2) * 86400,
+            },
+            "geometry": {
+                "type": "Point",
+                "coordinates": [longitude + (0.1 if moving and index == 0 else 0), latitude],
+            },
+        } for index in range(count)]
+
+    payload = {"type": "FeatureCollection", "features": [
+        *features(100, -94.0, 37.0),
+        *features(200, -93.98, 37.0),  # Too close to the stronger first candidate.
+        *features(300, -93.5, 37.0, moving=True),
+        *features(400, -93.2, 37.0, count=2),
+    ]}
+    anchors = select_secondary_anchors(
+        payload,
+        [{
+            "observer_id": "PRIMARY", "node_num": 1, "long_name": "Primary",
+            "latitude": 36.5, "longitude": -94.5,
+        }],
+        (-95.0, 36.0, -93.0, 38.0),
+        maximum=8,
+        minimum_separation_km=12,
+    )
+    assert [anchor["node_num"] for anchor in anchors] == [100]
+    assert anchors[0]["support_count"] == 8
+    assert anchors[0]["day_count"] == 2
+    assert anchors[0]["position_spread_km"] == 0

@@ -31,7 +31,7 @@ PREDICTION_COLORS = {
 
 
 def fetch_json(url: str, timeout: int = 60, attempts: int = 4) -> Any:
-    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.38"})
+    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.39"})
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -57,6 +57,7 @@ def load_sites(url: str) -> list[dict[str, Any]]:
         sites.append(
             {
                 "observer_id": str(row["observer_id"]),
+                "node_num": row.get("observer_node_num"),
                 "long_name": row.get("long_name") or row.get("observer_id"),
                 "latitude": float(latitude),
                 "longitude": float(longitude),
@@ -65,6 +66,116 @@ def load_sites(url: str) -> list[dict[str, Any]]:
     if not sites:
         raise RuntimeError("no positioned collector sites were returned")
     return sorted(sites, key=lambda row: row["observer_id"])
+
+
+def haversine_km(first: tuple[float, float], second: tuple[float, float]) -> float:
+    lat1, lon1 = map(math.radians, first)
+    lat2, lon2 = map(math.radians, second)
+    dlat, dlon = lat2 - lat1, lon2 - lon1
+    value = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    )
+    return 6371.0088 * 2 * math.atan2(math.sqrt(value), math.sqrt(1 - value))
+
+
+def select_secondary_anchors(
+    payload: dict[str, Any],
+    primary_sites: list[dict[str, Any]],
+    bounds: tuple[float, float, float, float],
+    maximum: int = 8,
+    minimum_separation_km: float = 12.0,
+) -> list[dict[str, Any]]:
+    """Choose stable, well-supported, geographically distributed non-collector nodes."""
+    west, south, east, north = bounds
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for feature in payload.get("features", []):
+        geometry = feature.get("geometry", {})
+        properties = feature.get("properties", {})
+        coordinates = geometry.get("coordinates")
+        node_num = properties.get("transmitter_node")
+        if (
+            geometry.get("type") != "Point"
+            or not isinstance(coordinates, list)
+            or len(coordinates) < 2
+            or not isinstance(node_num, int)
+        ):
+            continue
+        longitude, latitude = coordinates[:2]
+        if not (south <= latitude <= north and west <= longitude <= east):
+            continue
+        grouped.setdefault(node_num, []).append(feature)
+
+    primary_positions = [(site["latitude"], site["longitude"]) for site in primary_sites]
+    primary_nodes = {site.get("node_num") for site in primary_sites}
+    candidates: list[dict[str, Any]] = []
+    for node_num, features in grouped.items():
+        if node_num in primary_nodes or len(features) < 6:
+            continue
+        positions = [
+            (feature["geometry"]["coordinates"][1], feature["geometry"]["coordinates"][0])
+            for feature in features
+        ]
+        latitude = sorted(position[0] for position in positions)[len(positions) // 2]
+        longitude = sorted(position[1] for position in positions)[len(positions) // 2]
+        center = (latitude, longitude)
+        position_spread_km = max(haversine_km(center, position) for position in positions)
+        if position_spread_km > 2.0:
+            continue
+        observer_count = len({
+            str(feature["properties"].get("observer_id")) for feature in features
+        })
+        day_count = len({
+            int(float(feature["properties"].get("age_seconds") or 0) // 86400)
+            for feature in features
+        })
+        direct_count = sum(int(feature["properties"].get("hops") or 0) == 0 for feature in features)
+        if day_count < 2 or (observer_count < 2 and direct_count < 3):
+            continue
+        collector_distance_km = min(
+            (haversine_km(center, position) for position in primary_positions), default=999.0
+        )
+        if collector_distance_km < 8.0:
+            continue
+        weighted_support = sum(
+            max(0.0, min(1.0, float(feature["properties"].get("weight") or 0)))
+            for feature in features
+        )
+        score = (
+            weighted_support
+            + day_count * 2
+            + observer_count * 3
+            + min(collector_distance_km, 50) / 5
+        )
+        candidates.append({
+            "observer_id": f"NODE_{node_num:08X}",
+            "node_num": node_num,
+            "long_name": f"Evidence anchor !{node_num:08x}",
+            "latitude": latitude,
+            "longitude": longitude,
+            "support_count": len(features),
+            "direct_count": direct_count,
+            "observer_count": observer_count,
+            "day_count": day_count,
+            "weighted_support": round(weighted_support, 3),
+            "position_spread_km": round(position_spread_km, 3),
+            "collector_distance_km": round(collector_distance_km, 3),
+            "selection_score": round(score, 3),
+        })
+
+    selected: list[dict[str, Any]] = []
+    for candidate in sorted(candidates, key=lambda item: item["selection_score"], reverse=True):
+        position = (candidate["latitude"], candidate["longitude"])
+        if any(
+            haversine_km(position, (anchor["latitude"], anchor["longitude"]))
+            < minimum_separation_km
+            for anchor in selected
+        ):
+            continue
+        selected.append(candidate)
+        if len(selected) >= maximum:
+            break
+    return selected
 
 
 def terrain_tiles(sites: Iterable[dict[str, Any]], radius_km: float) -> set[tuple[int, int]]:
@@ -115,7 +226,7 @@ def ensure_terrain_tile(south: int, west: int, terrain_dir: Path) -> Path:
         if not href:
             raise RuntimeError(f"USGS did not return terrain for tile {south},{west}")
         tif_path = temp / "terrain.tif"
-        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.38"})
+        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.39"})
         with urllib.request.urlopen(request, timeout=300) as response, tif_path.open("wb") as output:
             shutil.copyfileobj(response, output)
 
@@ -431,12 +542,15 @@ def run_site(
     radius_km: float,
     bounds: tuple[float, float, float, float],
     cell_km: float,
+    antenna_height_m: float = 3.0,
+    path_loss_penalty_db: float = 0.0,
+    site_type: str = "collector",
 ) -> tuple[dict[tuple[int, int], dict[str, Any]], dict[str, Any]]:
     identifier = site["observer_id"]
     safe_identifier = "".join(character for character in identifier if character.isalnum() or character in "_-")
     qth = work_dir / f"{safe_identifier}.qth"
     qth.write_text(
-        f"{identifier}\n{site['latitude']}\n{abs(site['longitude'])}\n3m\n",
+        f"{identifier}\n{site['latitude']}\n{abs(site['longitude'])}\n{antenna_height_m}m\n",
         encoding="utf-8",
     )
     qth.with_suffix(".lrp").write_text(
@@ -465,7 +579,7 @@ def run_site(
         with ano.open(encoding="utf-8") as stream:
             for latitude, longitude, path_loss in parse_ano(stream):
                 raw_sample_count += 1
-                yield identifier, latitude, longitude, path_loss
+                yield identifier, latitude, longitude, path_loss + path_loss_penalty_db
 
     cells = aggregate_points(samples(), bounds, cell_km)
     return cells, {
@@ -475,6 +589,9 @@ def run_site(
         "longitude": site["longitude"],
         "raw_sample_count": raw_sample_count,
         "published_cell_count": len(cells),
+        "site_type": site_type,
+        "antenna_height_m": antenna_height_m,
+        "path_loss_penalty_db": path_loss_penalty_db,
         "model_log_tail": completed.stdout.strip().splitlines()[-1:] or [],
     }
 
@@ -518,10 +635,21 @@ def build(args: argparse.Namespace) -> Path:
     terrain_dir = output_root / "terrain"
     sites = load_sites(args.observers_url)
     reachability = fetch_json(args.reachability_url, timeout=180)
-    for south, west in sorted(terrain_tiles(sites, args.radius_km)):
+    secondary_anchors = select_secondary_anchors(
+        reachability,
+        sites,
+        args.bounds,
+        maximum=args.secondary_anchor_limit,
+        minimum_separation_km=args.secondary_minimum_separation_km,
+    )
+    required_tiles = terrain_tiles(sites, args.radius_km) | terrain_tiles(
+        secondary_anchors, args.secondary_radius_km
+    )
+    for south, west in sorted(required_tiles):
         ensure_terrain_tile(south, west, terrain_dir)
     cells: dict[tuple[int, int], dict[str, Any]] = {}
     site_results = []
+    secondary_results = []
     with tempfile.TemporaryDirectory(prefix="atlas-coverage-") as temporary:
         for site in sites:
             work = Path(temporary) / site["observer_id"]
@@ -534,6 +662,25 @@ def build(args: argparse.Namespace) -> Path:
                 if existing is None or candidate["path_loss_db"] < existing["path_loss_db"]:
                     cells[key] = candidate
             site_results.append(result)
+        for anchor in secondary_anchors:
+            work = Path(temporary) / anchor["observer_id"]
+            work.mkdir()
+            anchor_cells, result = run_site(
+                anchor,
+                terrain_dir,
+                work,
+                args.secondary_radius_km,
+                args.bounds,
+                args.cell_km,
+                antenna_height_m=1.5,
+                path_loss_penalty_db=4.0,
+                site_type="evidence_anchor",
+            )
+            for key, candidate in anchor_cells.items():
+                existing = cells.get(key)
+                if existing is None or candidate["path_loss_db"] < existing["path_loss_db"]:
+                    cells[key] = candidate
+            secondary_results.append({**anchor, **result})
     evidence_calibration = blend_reachability_evidence(
         cells, reachability, args.bounds, args.cell_km
     )
@@ -562,17 +709,21 @@ def build(args: argparse.Namespace) -> Path:
         "confidence": 0.90,
         "cell_km": args.cell_km,
         "radius_km": args.radius_km,
+        "secondary_anchor_radius_km": args.secondary_radius_km,
         "bounds": list(args.bounds),
         "collector_count": len(sites),
+        "secondary_anchor_count": len(secondary_anchors),
         "cell_count": len(cells),
         "band_counts": band_counts,
         "evidence_calibration": evidence_calibration,
         "collectors": site_results,
+        "secondary_anchors": secondary_results,
         "disclaimer": (
-            "Terrain-based direct-link estimate calibrated with repeated positioned RF "
-            "reception and weighted multihop reachability evidence. Activity alone never "
-            "creates coverage. Buildings, foliage, interference, antenna orientation, and "
-            "installation quality are not modeled."
+            "Terrain-based direct-link estimate from collectors and conservatively modeled "
+            "stable RF-active mesh anchors, calibrated with repeated positioned RF reception "
+            "and weighted multihop reachability evidence. Activity alone never creates "
+            "coverage. Buildings, foliage, interference, antenna orientation, and installation "
+            "quality are not modeled."
         ),
     }
     raster, raster_width, raster_height = cells_to_png(cells, args.bounds)
@@ -593,6 +744,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="http://127.0.0.1:18081/api/v1/coverage/reachability-surface?days=30",
     )
     parser.add_argument("--radius-km", type=float, default=80.0)
+    parser.add_argument("--secondary-radius-km", type=float, default=30.0)
+    parser.add_argument("--secondary-anchor-limit", type=int, default=8)
+    parser.add_argument("--secondary-minimum-separation-km", type=float, default=12.0)
     parser.add_argument("--cell-km", type=float, default=1.0)
     parser.add_argument("--bounds", type=float, nargs=4, default=DEFAULT_BOUNDS,
                         metavar=("WEST", "SOUTH", "EAST", "NORTH"))
