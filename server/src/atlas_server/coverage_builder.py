@@ -32,7 +32,7 @@ PREDICTION_COLORS = {
 
 
 def fetch_json(url: str, timeout: int = 60, attempts: int = 4) -> Any:
-    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.41"})
+    request = urllib.request.Request(url, headers={"User-Agent": "ATLAS-Coverage/0.3.42"})
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -46,10 +46,15 @@ def fetch_json(url: str, timeout: int = 60, attempts: int = 4) -> Any:
 
 def fetch_elevation_m(latitude: float, longitude: float) -> float | None:
     """Return a 3DEP point elevation for opportunity-site ranking."""
-    query = urllib.parse.urlencode({
-        "x": longitude, "y": latitude, "units": "Meters", "wkid": 4326,
-        "includeDate": "False",
-    })
+    query = urllib.parse.urlencode(
+        {
+            "x": longitude,
+            "y": latitude,
+            "units": "Meters",
+            "wkid": 4326,
+            "includeDate": "False",
+        }
+    )
     try:
         payload = fetch_json(f"https://epqs.nationalmap.gov/v1/json?{query}", timeout=30)
         value = float(payload["value"])
@@ -87,10 +92,7 @@ def haversine_km(first: tuple[float, float], second: tuple[float, float]) -> flo
     lat1, lon1 = map(math.radians, first)
     lat2, lon2 = map(math.radians, second)
     dlat, dlon = lat2 - lat1, lon2 - lon1
-    value = (
-        math.sin(dlat / 2) ** 2
-        + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    )
+    value = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
     return 6371.0088 * 2 * math.atan2(math.sqrt(value), math.sqrt(1 - value))
 
 
@@ -137,13 +139,15 @@ def select_secondary_anchors(
         position_spread_km = max(haversine_km(center, position) for position in positions)
         if position_spread_km > 2.0:
             continue
-        observer_count = len({
-            str(feature["properties"].get("observer_id")) for feature in features
-        })
-        day_count = len({
-            int(float(feature["properties"].get("age_seconds") or 0) // 86400)
-            for feature in features
-        })
+        observer_count = len(
+            {str(feature["properties"].get("observer_id")) for feature in features}
+        )
+        day_count = len(
+            {
+                int(float(feature["properties"].get("age_seconds") or 0) // 86400)
+                for feature in features
+            }
+        )
         direct_count = sum(int(feature["properties"].get("hops") or 0) == 0 for feature in features)
         if day_count < 2 or (observer_count < 2 and direct_count < 3):
             continue
@@ -162,21 +166,23 @@ def select_secondary_anchors(
             + observer_count * 3
             + min(collector_distance_km, 50) / 5
         )
-        candidates.append({
-            "observer_id": f"NODE_{node_num:08X}",
-            "node_num": node_num,
-            "long_name": f"Evidence anchor !{node_num:08x}",
-            "latitude": latitude,
-            "longitude": longitude,
-            "support_count": len(features),
-            "direct_count": direct_count,
-            "observer_count": observer_count,
-            "day_count": day_count,
-            "weighted_support": round(weighted_support, 3),
-            "position_spread_km": round(position_spread_km, 3),
-            "collector_distance_km": round(collector_distance_km, 3),
-            "selection_score": round(score, 3),
-        })
+        candidates.append(
+            {
+                "observer_id": f"NODE_{node_num:08X}",
+                "node_num": node_num,
+                "long_name": f"Evidence anchor !{node_num:08x}",
+                "latitude": latitude,
+                "longitude": longitude,
+                "support_count": len(features),
+                "direct_count": direct_count,
+                "observer_count": observer_count,
+                "day_count": day_count,
+                "weighted_support": round(weighted_support, 3),
+                "position_spread_km": round(position_spread_km, 3),
+                "collector_distance_km": round(collector_distance_km, 3),
+                "selection_score": round(score, 3),
+            }
+        )
 
     selected: list[dict[str, Any]] = []
     for candidate in sorted(candidates, key=lambda item: item["selection_score"], reverse=True):
@@ -200,8 +206,12 @@ def terrain_tiles(sites: Iterable[dict[str, Any]], radius_km: float) -> set[tupl
         latitude, longitude = site["latitude"], site["longitude"]
         lat_radius = radius_km / 111.32
         lon_radius = radius_km / (111.32 * max(0.2, math.cos(math.radians(latitude))))
-        for south in range(math.floor(latitude - lat_radius), math.floor(latitude + lat_radius) + 1):
-            for west in range(math.floor(longitude - lon_radius), math.floor(longitude + lon_radius) + 1):
+        for south in range(
+            math.floor(latitude - lat_radius), math.floor(latitude + lat_radius) + 1
+        ):
+            for west in range(
+                math.floor(longitude - lon_radius), math.floor(longitude + lon_radius) + 1
+            ):
                 result.add((south, west))
     return result
 
@@ -241,8 +251,11 @@ def ensure_terrain_tile(south: int, west: int, terrain_dir: Path) -> Path:
         if not href:
             raise RuntimeError(f"USGS did not return terrain for tile {south},{west}")
         tif_path = temp / "terrain.tif"
-        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.41"})
-        with urllib.request.urlopen(request, timeout=300) as response, tif_path.open("wb") as output:
+        request = urllib.request.Request(href, headers={"User-Agent": "ATLAS-Coverage/0.3.42"})
+        with (
+            urllib.request.urlopen(request, timeout=300) as response,
+            tif_path.open("wb") as output,
+        ):
             shutil.copyfileobj(response, output)
 
         try:
@@ -351,7 +364,11 @@ def blend_reachability_evidence(
         geometry = feature.get("geometry", {})
         properties = feature.get("properties", {})
         coordinates = geometry.get("coordinates")
-        if geometry.get("type") != "Point" or not isinstance(coordinates, list) or len(coordinates) < 2:
+        if (
+            geometry.get("type") != "Point"
+            or not isinstance(coordinates, list)
+            or len(coordinates) < 2
+        ):
             continue
         longitude, latitude = coordinates[:2]
         if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
@@ -405,9 +422,7 @@ def blend_reachability_evidence(
 
     for key, bucket in evidence.items():
         direct_qualified = bucket["direct_count"] >= 2
-        multihop_qualified = (
-            bucket["multihop_count"] >= 3 and bucket["weighted_support"] >= 0.75
-        )
+        multihop_qualified = bucket["multihop_count"] >= 3 and bucket["weighted_support"] >= 0.75
         if not direct_qualified and not multihop_qualified:
             continue
         qualified += 1
@@ -470,9 +485,14 @@ def blend_reachability_evidence(
     reachability_halo_cells = 0
     for key, bucket in reachability_halo_sources:
         for row_offset, column_offset in (
-            (-1, -1), (-1, 0), (-1, 1),
-            (0, -1), (0, 1),
-            (1, -1), (1, 0), (1, 1),
+            (-1, -1),
+            (-1, 0),
+            (-1, 1),
+            (0, -1),
+            (0, 1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
         ):
             neighbor = (key[0] + row_offset, key[1] + column_offset)
             latitude = south + neighbor[0] * lat_step
@@ -522,6 +542,9 @@ def recommend_coverage_opportunities(
     cell_km: float,
     maximum: int = 10,
     minimum_separation_km: float = 25.0,
+    regional_additions: int = 0,
+    regional_minimum_separation_km: float = 12.0,
+    regional_bounds: tuple[float, float, float, float] = (-94.65, 36.45, -92.85, 37.80),
     elevation_lookup: Callable[[float, float], float | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Find approximate, terrain-aware planning areas supported by RF evidence."""
@@ -535,7 +558,11 @@ def recommend_coverage_opportunities(
         geometry = feature.get("geometry", {})
         properties = feature.get("properties", {})
         coordinates = geometry.get("coordinates")
-        if geometry.get("type") != "Point" or not isinstance(coordinates, list) or len(coordinates) < 2:
+        if (
+            geometry.get("type") != "Point"
+            or not isinstance(coordinates, list)
+            or len(coordinates) < 2
+        ):
             continue
         longitude, latitude = coordinates[:2]
         if not isinstance(latitude, (int, float)) or not isinstance(longitude, (int, float)):
@@ -566,11 +593,7 @@ def recommend_coverage_opportunities(
                 if not 2 <= distance <= influence_radius:
                     continue
                 key = (row + row_offset, column + column_offset)
-                if (
-                    key in cells
-                    or not 0 <= key[0] < row_count
-                    or not 0 <= key[1] < column_count
-                ):
+                if key in cells or not 0 <= key[0] < row_count or not 0 <= key[1] < column_count:
                     continue
                 candidate = candidates.setdefault(
                     key,
@@ -590,7 +613,10 @@ def recommend_coverage_opportunities(
         for row_offset in range(-coverage_radius, coverage_radius + 1):
             for column_offset in range(-coverage_radius, coverage_radius + 1):
                 distance = math.hypot(row_offset, column_offset)
-                if distance > coverage_radius or (key[0] + row_offset, key[1] + column_offset) not in cells:
+                if (
+                    distance > coverage_radius
+                    or (key[0] + row_offset, key[1] + column_offset) not in cells
+                ):
                     continue
                 nearest_coverage = min(nearest_coverage, distance)
                 surrounding_coverage += 1
@@ -612,75 +638,112 @@ def recommend_coverage_opportunities(
             + len(quadrants) * 2
             + min(40, surrounding_coverage) * 0.08
         )
-        scored.append({
-            "latitude": round(latitude, 5),
-            "longitude": round(longitude, 5),
-            "score": round(score, 2),
-            "evidence_samples": candidate["samples"],
-            "observer_count": len(candidate["observers"]),
-            "node_count": len(candidate["nodes"]),
-            "nearest_predicted_coverage_km": round(nearest_coverage * cell_km, 1),
-            "surrounding_coverage_cells": surrounding_coverage,
-            "reason": "Uncovered planning area near corroborated RF activity and adjacent coverage",
-        })
+        scored.append(
+            {
+                "latitude": round(latitude, 5),
+                "longitude": round(longitude, 5),
+                "score": round(score, 2),
+                "evidence_samples": candidate["samples"],
+                "observer_count": len(candidate["observers"]),
+                "node_count": len(candidate["nodes"]),
+                "nearest_predicted_coverage_km": round(nearest_coverage * cell_km, 1),
+                "surrounding_coverage_cells": surrounding_coverage,
+                "reason": "Uncovered planning area near corroborated RF activity and adjacent coverage",
+            }
+        )
 
     selected: list[dict[str, Any]] = []
-    for candidate in sorted(scored, key=lambda item: item["score"], reverse=True):
-        base_position = (candidate["latitude"], candidate["longitude"])
-        if any(
-            haversine_km(base_position, (existing["latitude"], existing["longitude"]))
-            < minimum_separation_km
-            for existing in selected
-        ):
-            continue
-        # Search a small local set rather than implying the grid-cell center is the
-        # best installation point. Prefer higher 3DEP terrain without abandoning
-        # the evidence-supported gap that made the area useful.
-        local = sorted(
-            (
-                option for option in scored
-                if haversine_km(
-                    (candidate["latitude"], candidate["longitude"]),
-                    (option["latitude"], option["longitude"]),
-                ) <= 4.5
-                and option["score"] >= candidate["score"] * 0.82
-            ),
-            key=lambda item: item["score"],
-            reverse=True,
-        )[:5]
-        if elevation_lookup is not None:
-            unresolved = [option for option in local if "elevation_m" not in option]
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                elevations = executor.map(
-                    lambda option: elevation_lookup(option["latitude"], option["longitude"]),
-                    unresolved,
-                )
-                for option, elevation in zip(unresolved, elevations, strict=True):
-                    if elevation is not None:
-                        option["elevation_m"] = round(elevation, 1)
-            measured = [option["elevation_m"] for option in local if "elevation_m" in option]
-            if measured:
-                floor = min(measured)
-                candidate = max(
-                    local,
-                    key=lambda option: option["score"]
-                    + min(8.0, max(0.0, option.get("elevation_m", floor) - floor) / 20.0),
-                )
-        position = (candidate["latitude"], candidate["longitude"])
-        if any(
-            haversine_km(position, (existing["latitude"], existing["longitude"]))
-            < minimum_separation_km
-            for existing in selected
-        ):
-            continue
-        selected.append({
-            **candidate,
-            "id": f"OPPORTUNITY_{len(selected) + 1}",
-            "rank": len(selected) + 1,
-            "terrain_considered": elevation_lookup is not None,
-        })
-        if len(selected) >= maximum:
-            break
+
+    def add_candidates(
+        pool: list[dict[str, Any]], target: int, separation_km: float, regional: bool = False
+    ) -> None:
+        for candidate in pool:
+            base_position = (candidate["latitude"], candidate["longitude"])
+            if any(
+                haversine_km(base_position, (existing["latitude"], existing["longitude"]))
+                < separation_km
+                for existing in selected
+            ):
+                continue
+            # Search a small local set rather than implying the grid-cell center is the
+            # best installation point. Prefer higher 3DEP terrain without abandoning
+            # the evidence-supported gap that made the area useful.
+            local = sorted(
+                (
+                    option
+                    for option in scored
+                    if haversine_km(
+                        (candidate["latitude"], candidate["longitude"]),
+                        (option["latitude"], option["longitude"]),
+                    )
+                    <= 4.5
+                    and option["score"] >= candidate["score"] * 0.82
+                    and not any(
+                        haversine_km(
+                            (option["latitude"], option["longitude"]),
+                            (existing["latitude"], existing["longitude"]),
+                        )
+                        < separation_km
+                        for existing in selected
+                    )
+                ),
+                key=lambda item: item["score"],
+                reverse=True,
+            )[:5]
+            if elevation_lookup is not None:
+                unresolved = [option for option in local if "elevation_m" not in option]
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    elevations = executor.map(
+                        lambda option: elevation_lookup(option["latitude"], option["longitude"]),
+                        unresolved,
+                    )
+                    for option, elevation in zip(unresolved, elevations, strict=True):
+                        if elevation is not None:
+                            option["elevation_m"] = round(elevation, 1)
+                measured = [option["elevation_m"] for option in local if "elevation_m" in option]
+                if measured:
+                    floor = min(measured)
+                    candidate = max(
+                        local,
+                        key=lambda option: (
+                            option["score"]
+                            + min(8.0, max(0.0, option.get("elevation_m", floor) - floor) / 20.0)
+                        ),
+                    )
+            position = (candidate["latitude"], candidate["longitude"])
+            if any(
+                haversine_km(position, (existing["latitude"], existing["longitude"]))
+                < separation_km
+                for existing in selected
+            ):
+                continue
+            selected.append(
+                {
+                    **candidate,
+                    "id": f"OPPORTUNITY_{len(selected) + 1}",
+                    "rank": len(selected) + 1,
+                    "terrain_considered": elevation_lookup is not None,
+                    "regional_infill": regional,
+                }
+            )
+            if len(selected) >= target:
+                break
+
+    ordered = sorted(scored, key=lambda item: item["score"], reverse=True)
+    add_candidates(ordered, maximum, minimum_separation_km)
+    regional_west, regional_south, regional_east, regional_north = regional_bounds
+    regional_pool = [
+        candidate
+        for candidate in ordered
+        if regional_south <= candidate["latitude"] <= regional_north
+        and regional_west <= candidate["longitude"] <= regional_east
+    ]
+    add_candidates(
+        regional_pool,
+        maximum + regional_additions,
+        regional_minimum_separation_km,
+        regional=True,
+    )
     return selected
 
 
@@ -716,11 +779,15 @@ def cells_to_geojson(
                 },
                 "geometry": {
                     "type": "Polygon",
-                    "coordinates": [[
-                        [cell_west, cell_south], [cell_east, cell_south],
-                        [cell_east, cell_north], [cell_west, cell_north],
-                        [cell_west, cell_south],
-                    ]],
+                    "coordinates": [
+                        [
+                            [cell_west, cell_south],
+                            [cell_east, cell_south],
+                            [cell_east, cell_north],
+                            [cell_west, cell_north],
+                            [cell_west, cell_south],
+                        ]
+                    ],
                 },
             }
         )
@@ -766,7 +833,9 @@ def run_site(
     site_type: str = "collector",
 ) -> tuple[dict[tuple[int, int], dict[str, Any]], dict[str, Any]]:
     identifier = site["observer_id"]
-    safe_identifier = "".join(character for character in identifier if character.isalnum() or character in "_-")
+    safe_identifier = "".join(
+        character for character in identifier if character.isalnum() or character in "_-"
+    )
     qth = work_dir / f"{safe_identifier}.qth"
     qth.write_text(
         f"{identifier}\n{site['latitude']}\n{abs(site['longitude'])}\n{antenna_height_m}m\n",
@@ -778,8 +847,22 @@ def run_site(
     )
     ano = work_dir / f"{safe_identifier}.ano"
     command = [
-        "splat", "-t", str(qth), "-L", "1.5", "-metric", "-R", str(radius_km),
-        "-d", str(terrain_dir), "-db", "153", "-ano", str(ano), "-N", "-olditm",
+        "splat",
+        "-t",
+        str(qth),
+        "-L",
+        "1.5",
+        "-metric",
+        "-R",
+        str(radius_km),
+        "-d",
+        str(terrain_dir),
+        "-db",
+        "153",
+        "-ano",
+        str(ano),
+        "-N",
+        "-olditm",
     ]
     completed = subprocess.run(
         command,
@@ -910,6 +993,8 @@ def build(args: argparse.Namespace) -> Path:
         args.cell_km,
         maximum=args.coverage_opportunity_limit,
         minimum_separation_km=args.coverage_opportunity_separation_km,
+        regional_additions=args.coverage_opportunity_regional_additions,
+        regional_minimum_separation_km=args.coverage_opportunity_regional_separation_km,
         elevation_lookup=fetch_elevation_m,
     )
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -971,14 +1056,11 @@ def build(args: argparse.Namespace) -> Path:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="atlas-coverage-builder")
     parser.add_argument("--output", default="/var/lib/atlas/coverage")
-    parser.add_argument(
-        "--observers-url", default="http://127.0.0.1:18081/api/v1/observer-health"
-    )
+    parser.add_argument("--observers-url", default="http://127.0.0.1:18081/api/v1/observer-health")
     parser.add_argument(
         "--reachability-url",
         default=(
-            "http://127.0.0.1:18081/api/v1/coverage/"
-            "reachability-surface?days=30&limit=350000"
+            "http://127.0.0.1:18081/api/v1/coverage/reachability-surface?days=30&limit=350000"
         ),
     )
     parser.add_argument("--radius-km", type=float, default=80.0)
@@ -987,9 +1069,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--secondary-minimum-separation-km", type=float, default=5.0)
     parser.add_argument("--coverage-opportunity-limit", type=int, default=10)
     parser.add_argument("--coverage-opportunity-separation-km", type=float, default=25.0)
+    parser.add_argument("--coverage-opportunity-regional-additions", type=int, default=5)
+    parser.add_argument("--coverage-opportunity-regional-separation-km", type=float, default=12.0)
     parser.add_argument("--cell-km", type=float, default=1.0)
-    parser.add_argument("--bounds", type=float, nargs=4, default=DEFAULT_BOUNDS,
-                        metavar=("WEST", "SOUTH", "EAST", "NORTH"))
+    parser.add_argument(
+        "--bounds",
+        type=float,
+        nargs=4,
+        default=DEFAULT_BOUNDS,
+        metavar=("WEST", "SOUTH", "EAST", "NORTH"),
+    )
     return parser.parse_args(argv)
 
 

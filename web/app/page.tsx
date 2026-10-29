@@ -1706,7 +1706,7 @@ export default function Home() {
             <button className={`filter-row provenance-row ${showRemoteRf ? "active" : ""}`} onClick={() => setShowRemoteRf(!showRemoteRf)}><span className="filter-icon remote-rf"><Radio size={14} /></span><span><strong>Remote gateway RF</strong><small>Trusted gateway report · 24H map life</small></span><span className="provenance-count"><b>{nodeSummaries.filter((node) => node.remote_rf_observations > 0).length}</b><small>NODES</small></span>{showRemoteRf ? <Eye size={14} /> : <EyeOff size={14} />}</button>
             <button className={`filter-row provenance-row ${showMqtt ? "active" : ""}`} onClick={() => setShowMqtt(!showMqtt)}><span className="filter-icon mqtt"><Zap size={14} /></span><span><strong>MQTT network</strong><small>Broker-forwarded traffic</small></span><span className="provenance-count"><b>{nodeSummaries.filter((node) => node.mqtt_observations > 0).length}</b><small>NODES</small><b>{quality?.mqtt_unique_packets ?? 0}</b><small>PACKETS</small></span>{showMqtt ? <Eye size={14} /> : <EyeOff size={14} />}</button>
           </details>
-          <details ref={layersPanel} className="network-controls">
+          <details ref={layersPanel} className="network-controls" data-tour="layers">
             <summary>MAP LAYERS <Layers3 size={12} /></summary>
             <button className="layer-row" onClick={() => setShowNodes(!showNodes)}><span>Nodes</span><span className={`mini-toggle ${showNodes ? "on" : ""}`}><i /></span></button>
             <button className="layer-row" onClick={() => setShowPrediction(!showPrediction)} title={predictionName ?? "Nightly cached terrain model"}><span>Predicted RF Coverage</span><span className={`mini-toggle ${showPrediction ? "on" : ""}`}><i /></span></button>
@@ -1741,7 +1741,7 @@ export default function Home() {
         </div>
 
         {helpOpen && <HelpCenter onClose={() => setHelpOpen(false)} onStartTour={() => { setHelpOpen(false); setTourOpen(true); }} legend={<LegendContents />} />}
-        {tourOpen && <GuidedTour onShowNode={showTourNodeEvidence} onClose={() => { setTourOpen(false); setDetailOpen(false); setSelectedActivity(null); }} />}
+        {tourOpen && <GuidedTour onShowNode={showTourNodeEvidence} onShowLayers={() => { setPanelOpen(true); if (layersPanel.current) layersPanel.current.open = true; if (provenancePanel.current) provenancePanel.current.open = false; }} onClose={() => { setTourOpen(false); setDetailOpen(false); setSelectedActivity(null); if (layersPanel.current) layersPanel.current.open = false; }} />}
 
         <div className="map-caption">
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>

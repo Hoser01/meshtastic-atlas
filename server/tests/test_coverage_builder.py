@@ -204,11 +204,16 @@ def test_coverage_opportunities_are_uncovered_capped_and_evidence_supported():
         {"type": "FeatureCollection", "features": features},
         bounds,
         cell_km,
-        maximum=2,
+        maximum=1,
         minimum_separation_km=5,
+        regional_additions=1,
+        regional_minimum_separation_km=0.5,
+        regional_bounds=bounds,
         elevation_lookup=lambda latitude, longitude: 300 + latitude + longitude,
     )
-    assert 1 <= len(opportunities) <= 2
+    assert len(opportunities) == 2
+    assert opportunities[0]["regional_infill"] is False
+    assert opportunities[1]["regional_infill"] is True
     assert all(item["observer_count"] == 2 for item in opportunities)
     assert all(item["node_count"] == 3 for item in opportunities)
     assert all(item["nearest_predicted_coverage_km"] >= 2 for item in opportunities)

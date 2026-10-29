@@ -86,7 +86,7 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
             <article className="local"><b>LOCAL TRANSMISSION</b><p>A connected observer radio originated or queued the packet.</p><Plain>One of our stations was sending it.</Plain></article>
           </div>
           <h3>MEASURED, INFERRED, AND PREDICTED</h3>
-          <div className="help-copy"><p><b>Measured</b> means collector evidence such as RSSI and SNR from a direct reception. <b>Inferred reachability</b> uses reported hops to show that a positioned node reached a collector, but does not invent the relay route. <b>Predicted RF coverage</b> starts with nightly terrain models from collectors and a capped set of stable, geographically distributed RF-active mesh anchors. Secondary anchors use shorter range, lower antenna height, and additional loss. A deeper RF history calibrates the result; only dense multihop evidence corroborated by multiple observers may add a small one-cell marginal footprint. Activity alone never creates coverage. Up to ten yellow stars identify separated, uncovered planning areas selected from corroborated RF demand, nearby modeled coverage, and local 3DEP elevation.</p><Plain>Measured is what a radio heard. Inferred is what packets repeatedly prove about reaching the mesh. Predicted uses collectors and trustworthy fixed mesh nodes, then cautiously fills small gaps where repeated RF history supports it. A yellow star says “this general area may be worth surveying for another node,” not “install at this exact spot.” It is still an estimate—not a promise that a radio will work there.</Plain></div>
+          <div className="help-copy"><p><b>Measured</b> means collector evidence such as RSSI and SNR from a direct reception. <b>Inferred reachability</b> uses reported hops to show that a positioned node reached a collector, but does not invent the relay route. <b>Predicted RF coverage</b> starts with nightly terrain models from collectors and a capped set of stable, geographically distributed RF-active mesh anchors. Secondary anchors use shorter range, lower antenna height, and additional loss. A deeper RF history calibrates the result; only dense multihop evidence corroborated by multiple observers may add a small one-cell marginal footprint. Activity alone never creates coverage. Up to fifteen yellow stars identify separated, uncovered planning areas selected from corroborated RF demand, nearby modeled coverage, and local 3DEP elevation; five slots are reserved for closer southwest Missouri infill.</p><Plain>Measured is what a radio heard. Inferred is what packets repeatedly prove about reaching the mesh. Predicted uses collectors and trustworthy fixed mesh nodes, then cautiously fills small gaps where repeated RF history supports it. A yellow star says “this general area may be worth surveying for another node,” not “install at this exact spot.” It is still an estimate—not a promise that a radio will work there.</Plain></div>
           <div className="help-caution"><b>ATLAS DOES NOT CLAIM</b><p>A sender and receiver prove every relay between them; MQTT proves local RF reception; NeighborInfo is a collector measurement; or a heatmap is a precise signal boundary.</p></div>
         </>}
         {section === "fix" && <>
@@ -99,18 +99,19 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
             <details><summary>A node shows the wrong place</summary><p>Check Position Age in Node Evidence. ATLAS retains the last valid position until the node reports a newer one. A reported 0,0 is rejected as incorrectly configured.</p></details>
             <details><summary>The mobile screen is crowded</summary><p>Close Node Evidence or Network View when finished. The timeline is intentionally hidden on small screens so it does not cover map controls.</p></details>
           </div>
-          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.27</p>
+          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.42</p>
         </>}
       </div>
     </section>
   </div>;
 }
 
-type TourStep = { target: string; title: string; text: string; opensNode?: boolean };
+type TourStep = { target: string; title: string; text: string; opensNode?: boolean; opensLayers?: boolean };
 const tourSteps: TourStep[] = [
   { target: "[data-tour='topbar']", title: "Status and display", text: "A pulsing red dot means LIVE, purple means REPLAY, and yellow means PAUSED. Click the status indicator to return to live activity. This bar also shows network totals, text size, Help, and the legend." },
   { target: "[data-tour='network']", title: "Find and filter nodes", text: "Search by name or ID. The list has one row per known node, ordered by when it was last heard." },
   { target: "[data-tour='map-tools']", title: "Map controls", text: "Reset the regional view, open provenance or layers, and change map zoom." },
+  { target: "[data-tour='layers']", title: "Map layers", text: "Layers has been opened for you. Toggle nodes, Predicted RF Coverage and its yellow opportunity stars, RF Reachability, recent Activity Heatmap, or Live Packet Paths. These overlays answer different questions and can be combined.", opensLayers: true },
   { target: "[data-tour='quality']", title: "Data quality", text: "Open this strip to inspect unique packets, repeats, decrypt success, gateways, and data warnings." },
   { target: "[data-tour='node-evidence']", title: "Node Evidence", text: "ATLAS selected a real positioned node for this example. This panel separates last RF activity from any activity, shows signal readings and position age, keeps known identity and hardware details, lists observers that directly heard it, and provides its recent packet history.", opensNode: true },
   { target: "[data-tour='activity']", title: "Packet activity", text: "Select a recent event to see the packet evidence and follow known endpoints on the map." },
@@ -118,9 +119,11 @@ const tourSteps: TourStep[] = [
   { target: "[data-tour='footer']", title: "LZMesh links", text: "The LZMesh badge returns to the main community website. The copyright identifies ATLAS as an LZMesh project, and desktop links open the community channels." },
 ];
 
-export function GuidedTour({ onClose, onShowNode }: { onClose: () => void; onShowNode: () => void }) {
+export function GuidedTour({ onClose, onShowNode, onShowLayers }: { onClose: () => void; onShowNode: () => void; onShowLayers: () => void }) {
   const showNode = useRef(onShowNode);
+  const showLayers = useRef(onShowLayers);
   useEffect(() => { showNode.current = onShowNode; }, [onShowNode]);
+  useEffect(() => { showLayers.current = onShowLayers; }, [onShowLayers]);
   const [visibleSteps, setVisibleSteps] = useState<TourStep[]>([]);
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -137,8 +140,9 @@ export function GuidedTour({ onClose, onShowNode }: { onClose: () => void; onSho
   useEffect(() => {
     if (!step) return;
     if (step.opensNode) showNode.current();
+    if (step.opensLayers) showLayers.current();
     const update = () => setRect(document.querySelector(step.target)?.getBoundingClientRect() ?? null);
-    const frame = window.setTimeout(update, step.opensNode ? 450 : 0);
+    const frame = window.setTimeout(update, step.opensNode || step.opensLayers ? 450 : 0);
     window.addEventListener("resize", update);
     return () => { window.clearTimeout(frame); window.removeEventListener("resize", update); };
   }, [step]);
