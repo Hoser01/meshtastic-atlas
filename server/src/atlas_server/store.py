@@ -783,41 +783,16 @@ class AtlasStore:
         destination = event.get("to_node")
         if not isinstance(destination, int) or destination in {0, 0xFFFFFFFF}:
             return
+        # Being addressed does not prove the destination was online or received the
+        # packet. Preserve its received-evidence count only when the node is already
+        # known; never create or refresh destination state from another node's packet.
         self.connection.execute(
             """
-            INSERT INTO node_summaries
-                (node_num, first_heard, last_heard, last_event_id, last_event_type,
-                 last_source, last_observer_id, last_rssi, last_snr, last_packet_seen,
-                 received_observations)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 1)
-            ON CONFLICT(node_num) DO UPDATE SET
-                first_heard=min(node_summaries.first_heard, excluded.first_heard),
-                last_heard=max(node_summaries.last_heard, excluded.last_heard),
-                last_event_id=CASE WHEN excluded.last_heard>=node_summaries.last_heard
-                    THEN excluded.last_event_id ELSE node_summaries.last_event_id END,
-                last_event_type=CASE WHEN excluded.last_heard>=node_summaries.last_heard
-                    THEN excluded.last_event_type ELSE node_summaries.last_event_type END,
-                last_source=CASE WHEN excluded.last_heard>=node_summaries.last_heard
-                    THEN excluded.last_source ELSE node_summaries.last_source END,
-                last_observer_id=CASE WHEN excluded.last_heard>=node_summaries.last_heard
-                    THEN excluded.last_observer_id ELSE node_summaries.last_observer_id END,
-                last_packet_seen=CASE
-                    WHEN excluded.last_packet_seen IS NOT NULL AND
-                         (node_summaries.last_packet_seen IS NULL OR
-                          excluded.last_packet_seen>=node_summaries.last_packet_seen)
-                    THEN excluded.last_packet_seen ELSE node_summaries.last_packet_seen END,
-                received_observations=node_summaries.received_observations+1
+            UPDATE node_summaries
+            SET received_observations=received_observations+1
+            WHERE node_num=?
             """,
-            (
-                destination,
-                observed_at,
-                observed_at,
-                event["event_id"],
-                event["event"],
-                source,
-                event["observer_id"],
-                packet_seen,
-            ),
+            (destination,),
         )
 
     def _ingest_rf_measurement(self, event: dict[str, Any]) -> None:

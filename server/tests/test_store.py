@@ -339,6 +339,10 @@ def test_device_metadata_enriches_node_without_erasing_identity(tmp_path) -> Non
 def test_node_summaries_are_unique_ordered_and_include_received_activity(tmp_path) -> None:
     store = AtlasStore(tmp_path / "atlas.db")
     try:
+        destination_seen = observation("3" * 32, "A", "2026-09-18T12:00:00Z", -90)
+        destination_seen["from_node"] = 200
+        destination_seen["packet_id"] = 41
+        assert store.ingest(destination_seen)
         first = observation("4" * 32, "A", "2026-09-18T13:00:00Z", -80)
         first["to_node"] = 200
         first["node_info"] = {"long_name": "Sender", "short_name": "SND"}
@@ -356,13 +360,14 @@ def test_node_summaries_are_unique_ordered_and_include_received_activity(tmp_pat
         assert summaries[0]["sent_observations"] == 2
         assert summaries[0]["last_packet_seen"] == "2026-09-18T13:05:00Z"
         assert summaries[1]["received_observations"] == 2
-        assert summaries[1]["last_packet_seen"] == "2026-09-18T13:05:00Z"
+        assert summaries[1]["last_packet_seen"] == "2026-09-18T12:00:00Z"
+        assert summaries[1]["last_heard"] == "2026-09-18T12:00:00Z"
         assert store.list_node_activity(200)[0]["node_direction"] == "received"
         assert len(store.list_node_activity(100)) == 2
         quality = store.quality_metrics()
-        assert quality["unique_packets"] == 2
+        assert quality["unique_packets"] == 3
         assert quality["repeated_observations"] == 0
-        assert quality["rf_unique_packets"] == 2
+        assert quality["rf_unique_packets"] == 3
         assert quality["deduplication_rule"].endswith("RF_OBSERVED wins provenance")
     finally:
         store.close()
