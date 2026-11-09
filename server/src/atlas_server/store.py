@@ -296,16 +296,22 @@ class AtlasStore:
                            observed_at AS seen_at
                     FROM observations
                     WHERE json_type(raw_event, '$.packet_id')='integer'
+                      AND coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
                     UNION ALL
                     SELECT json_extract(raw_event, '$.to_node'), observed_at FROM observations
                     WHERE json_type(raw_event, '$.packet_id')='integer'
+                      AND coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
                     UNION ALL
                     SELECT json_extract(raw_event, '$.from_node'), observed_at
                     FROM events
                     WHERE json_type(raw_event, '$.packet_id')='integer'
+                      AND coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
+                      AND coalesce(json_extract(raw_event, '$.historical_replay'), 0)=0
                     UNION ALL
                     SELECT json_extract(raw_event, '$.to_node'), observed_at FROM events
                     WHERE json_type(raw_event, '$.packet_id')='integer'
+                      AND coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
+                      AND coalesce(json_extract(raw_event, '$.historical_replay'), 0)=0
                 )
                 SELECT node_num, max(seen_at) AS latest FROM packet_activity
                 WHERE node_num IS NOT NULL AND node_num NOT IN (0, 4294967295)
@@ -338,9 +344,12 @@ class AtlasStore:
                 FROM (
                     SELECT json_extract(raw_event, '$.from_node') AS node_num,
                            source, observer_id FROM observations
+                    WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
                     UNION ALL
                     SELECT json_extract(raw_event, '$.from_node'),
                            json_extract(raw_event, '$.source'), observer_id FROM events
+                    WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
+                      AND coalesce(json_extract(raw_event, '$.historical_replay'), 0)=0
                 ) WHERE node_num IS NOT NULL GROUP BY node_num;
                 CREATE INDEX atlas_source_counts_node_idx ON atlas_source_counts(node_num);
                 UPDATE node_summaries SET
@@ -359,6 +368,7 @@ class AtlasStore:
                            row_number() OVER (PARTITION BY json_extract(raw_event, '$.from_node')
                                ORDER BY observed_at DESC) AS rank
                     FROM observations WHERE observer_id NOT LIKE 'MQTT:%'
+                      AND coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
                 ) WHERE rank=1;
                 CREATE INDEX atlas_latest_rf_node_idx ON atlas_latest_rf(node_num);
                 UPDATE node_summaries SET
@@ -397,10 +407,19 @@ class AtlasStore:
     def _backfill_coverage_evidence(self) -> None:
         """Seed new evidence tables from the lossless event archive on upgrade."""
         if self.connection.execute("SELECT count(*) FROM rf_measurements").fetchone()[0] == 0:
-            for row in self.connection.execute("SELECT raw_event FROM observations"):
+            for row in self.connection.execute(
+                "SELECT raw_event FROM observations WHERE "
+                "coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0"
+            ):
                 self._ingest_rf_measurement(json.loads(row["raw_event"]))
         if self.connection.execute("SELECT count(*) FROM neighbor_links").fetchone()[0] == 0:
-            archives = "SELECT raw_event FROM observations UNION ALL SELECT raw_event FROM events"
+            archives = (
+                "SELECT raw_event FROM observations WHERE "
+                "coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0 "
+                "UNION ALL SELECT raw_event FROM events WHERE "
+                "coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0 AND "
+                "coalesce(json_extract(raw_event, '$.historical_replay'), 0)=0"
+            )
             for row in self.connection.execute(archives):
                 self._ingest_neighbor_info(json.loads(row["raw_event"]))
         self.connection.commit()
@@ -409,12 +428,54 @@ class AtlasStore:
         if self.connection.execute("SELECT count(*) FROM node_summaries").fetchone()[0]:
             return
         archives = (
-            "SELECT observed_at, raw_event FROM observations UNION ALL "
-            "SELECT observed_at, raw_event FROM events ORDER BY observed_at"
+            "SELECT observed_at, raw_event FROM observations WHERE "
+            "coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0 UNION ALL "
+            "SELECT observed_at, raw_event FROM events WHERE "
+            "coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0 AND "
+            "coalesce(json_extract(raw_event, '$.historical_replay'), 0)=0 "
+            "ORDER BY observed_at"
         )
         for row in self.connection.execute(archives):
             self._ingest_node_summary(json.loads(row["raw_event"]))
         self.connection.commit()
+
+    def repair_repeat_derived_state(self) -> dict[str, int]:
+        """Remove repeat-derived state and rebuild node freshness from unique evidence."""
+        with self.lock:
+            repeat_filter = (
+                "SELECT event_id FROM observations WHERE "
+                "coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=1 "
+                "UNION SELECT event_id FROM events WHERE "
+                "coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=1 OR "
+                "coalesce(json_extract(raw_event, '$.historical_replay'), 0)=1"
+            )
+            removed: dict[str, int] = {}
+            for table in ("positions", "telemetry", "rf_measurements", "neighbor_links"):
+                cursor = self.connection.execute(
+                    f"DELETE FROM {table} WHERE event_id IN ({repeat_filter})"
+                )
+                removed[table] = cursor.rowcount
+
+            self.connection.execute("DELETE FROM node_summaries")
+            archives = self.connection.execute(
+                """
+                SELECT observed_at, raw_event FROM (
+                    SELECT observed_at, raw_event FROM observations
+                    WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
+                    UNION ALL
+                    SELECT observed_at, raw_event FROM events
+                    WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
+                      AND coalesce(json_extract(raw_event, '$.historical_replay'), 0)=0
+                ) ORDER BY observed_at
+                """
+            ).fetchall()
+            for row in archives:
+                self._ingest_node_summary(json.loads(row["raw_event"]))
+            removed["node_summaries_rebuilt"] = self.connection.execute(
+                "SELECT count(*) FROM node_summaries"
+            ).fetchone()[0]
+            self.connection.commit()
+            return removed
 
     def close(self) -> None:
         self.connection.close()
@@ -491,7 +552,11 @@ class AtlasStore:
             )
             # Preserve replayed broker evidence in the lossless archive, but do not let an old
             # retained payload masquerade as live traffic or replace current node state.
-            if cursor.rowcount == 1 and not event.get("historical_replay"):
+            if (
+                cursor.rowcount == 1
+                and not event.get("historical_replay")
+                and not event.get("repeat_observation")
+            ):
                 self._ingest_position(event)
                 self._ingest_telemetry(event)
                 self._ingest_node_info(event)
@@ -631,12 +696,15 @@ class AtlasStore:
                 raw,
             ),
         )
-        self._ingest_position(event)
-        self._ingest_telemetry(event)
-        self._ingest_node_info(event)
-        self._ingest_rf_measurement(event)
-        self._ingest_neighbor_info(event)
-        self._ingest_node_summary(event)
+        # Keep repeated observations in the lossless archive and quality metrics, but
+        # never let cached/replayed packets refresh live node state or RF evidence.
+        if not event.get("repeat_observation"):
+            self._ingest_position(event)
+            self._ingest_telemetry(event)
+            self._ingest_node_info(event)
+            self._ingest_rf_measurement(event)
+            self._ingest_neighbor_info(event)
+            self._ingest_node_summary(event)
         self.connection.commit()
         return True
 
@@ -1019,8 +1087,10 @@ class AtlasStore:
                 SELECT observed_at, raw_event FROM (
                     SELECT observed_at, raw_event FROM events
                     WHERE coalesce(json_extract(raw_event, '$.historical_replay'), 0)=0
+                      AND coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
                     UNION ALL
                     SELECT observed_at, raw_event FROM observations
+                    WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
                 ) ORDER BY observed_at DESC LIMIT ?
                 """,
                 (limit,),
@@ -1041,10 +1111,12 @@ class AtlasStore:
                            json_extract(raw_event, '$.source') AS source
                     FROM events WHERE observed_at>=?
                       AND coalesce(json_extract(raw_event, '$.historical_replay'), 0)=0
+                      AND coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
                     UNION ALL
                     SELECT strftime('%Y-%m-%dT%H:%M:00Z', observed_at) AS minute,
                            source
                     FROM observations WHERE observed_at>=?
+                      AND coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
                 ) GROUP BY minute, source
                 """,
                 (cutoff, cutoff),
@@ -1192,7 +1264,9 @@ class AtlasStore:
                        json_extract(e.raw_event, '$.mux_frames') AS mux_frames,
                        json_extract(e.raw_event, '$.connection_epoch') AS connection_epoch,
                        (SELECT max(o.observed_at) FROM observations o
-                        WHERE o.observer_id=e.observer_id) AS last_rf_observation,
+                        WHERE o.observer_id=e.observer_id
+                          AND coalesce(json_extract(o.raw_event,
+                              '$.repeat_observation'), 0)=0) AS last_rf_observation,
                        (SELECT count(*) FROM events errors
                         WHERE errors.observer_id=e.observer_id
                           AND errors.event_type='observer_connection_error'
@@ -1276,6 +1350,7 @@ class AtlasStore:
                     ORDER BY latest.observed_at DESC LIMIT 1
                 )
                 WHERE o.source='RF_OBSERVED'
+                  AND coalesce(json_extract(o.raw_event, '$.repeat_observation'), 0)=0
                 ORDER BY o.observed_at DESC LIMIT ?
                 """,
                     (limit,),
@@ -1397,6 +1472,7 @@ class AtlasStore:
                 """
                 SELECT max(observed_at) FROM observations
                 WHERE source='RF_OBSERVED'
+                  AND coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
                   AND (json_extract(raw_event, '$.from_node')=?
                     OR json_extract(raw_event, '$.to_node')=?)
                 """,
@@ -1419,6 +1495,7 @@ class AtlasStore:
                 FROM observations o
                 LEFT JOIN node_metadata m ON m.node_num=o.observer_node_num
                 WHERE o.source='RF_OBSERVED'
+                  AND coalesce(json_extract(o.raw_event, '$.repeat_observation'), 0)=0
                   AND json_extract(o.raw_event, '$.from_node')=?
                 GROUP BY o.observer_id, o.observer_node_num
                 ORDER BY last_observed_at DESC
@@ -1850,12 +1927,14 @@ class AtlasStore:
                 """
                 SELECT observed_at, raw_event FROM (
                     SELECT observed_at, raw_event FROM observations
-                    WHERE json_extract(raw_event, '$.from_node')=?
-                       OR json_extract(raw_event, '$.to_node')=?
+                    WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
+                      AND (json_extract(raw_event, '$.from_node')=?
+                       OR json_extract(raw_event, '$.to_node')=?)
                     UNION ALL
                     SELECT observed_at, raw_event FROM events
-                    WHERE json_extract(raw_event, '$.from_node')=?
-                       OR json_extract(raw_event, '$.to_node')=?
+                    WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
+                      AND (json_extract(raw_event, '$.from_node')=?
+                       OR json_extract(raw_event, '$.to_node')=?)
                 ) ORDER BY observed_at DESC LIMIT ?
                 """,
                 (node_num, node_num, node_num, node_num, limit),

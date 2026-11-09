@@ -167,10 +167,18 @@ def test_activity_marks_repeated_packet_at_same_observer(tmp_path) -> None:
                 "/api/v1/events", json=event,
                 headers={"X-Atlas-Ingest-Token": "secret"},
             ).status_code == 202
+        # The repeated copy remains in packet evidence, but cannot masquerade as
+        # fresh live activity or advance any derived node state.
         activity = client.get("/api/v1/activity").json()
-        assert activity[0]["event_id"] == "b" * 32
-        assert activity[0]["repeat_observation"] is True
-        assert activity[1]["repeat_observation"] is False
+        assert [item["event_id"] for item in activity] == ["a" * 32]
+        summary = client.get("/api/v1/nodes/100").json()
+        assert summary["last_heard"] == first["observed_at"]
+        assert summary["last_packet_seen"] == first["observed_at"]
+        assert len(client.get("/api/v1/positions?node_num=100").json()) == 1
+        assert len(client.get("/api/v1/nodes/100/activity").json()) == 1
+        packet = client.get("/api/v1/quality/packets/100/42").json()
+        assert packet["observation_count"] == 2
+        assert packet["repeat_count"] == 1
 
 
 def test_configured_observer_position_fills_missing_radio_position(tmp_path, monkeypatch) -> None:

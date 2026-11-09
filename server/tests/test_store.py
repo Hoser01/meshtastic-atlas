@@ -368,6 +368,38 @@ def test_node_summaries_are_unique_ordered_and_include_received_activity(tmp_pat
         store.close()
 
 
+def test_repeat_repair_restores_unique_node_freshness_and_derivatives(tmp_path) -> None:
+    store = AtlasStore(tmp_path / "atlas.db")
+    try:
+        first = observation("a" * 32, "A", "2026-09-18T13:00:00Z", -80)
+        first["position"] = {"latitude": 37.0, "longitude": -93.0}
+        repeated = observation("b" * 32, "A", "2026-09-19T13:00:00Z", 0)
+        repeated["position"] = {"latitude": 38.0, "longitude": -94.0}
+        assert store.ingest(first)
+        assert store.ingest(repeated)
+
+        archived = store.transmission(42, 100, 0xFFFFFFFF)
+        assert archived is not None
+        assert len(archived["observations"]) == 2
+        assert store.get_node_summary(100)["last_heard"] == first["observed_at"]
+        assert len(store.list_positions(node_num=100)) == 1
+
+        # Simulate the pre-fix derived rows, then verify the maintenance repair.
+        store._ingest_position(repeated)
+        store._ingest_node_summary(repeated)
+        store.connection.commit()
+        assert store.get_node_summary(100)["last_heard"] == repeated["observed_at"]
+        assert len(store.list_positions(node_num=100)) == 2
+
+        repaired = store.repair_repeat_derived_state()
+        assert repaired["positions"] == 1
+        assert store.get_node_summary(100)["last_heard"] == first["observed_at"]
+        assert len(store.list_positions(node_num=100)) == 1
+        assert len(store.list_activity()) == 1
+    finally:
+        store.close()
+
+
 def test_unknown_packet_metadata_does_not_conflict_with_decoded_value() -> None:
     base = {
         "from_node": 100,
