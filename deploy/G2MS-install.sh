@@ -20,7 +20,7 @@ case "${ID:-}:${ID_LIKE:-}" in
   *) die "unsupported OS: ${PRETTY_NAME:-unknown}; this package supports Raspberry Pi OS, Ubuntu, and Debian" ;;
 esac
 
-for script in migrate-install-mux.sh migrate-install-collector.sh; do
+for script in migrate-install-mux.sh migrate-install-collector.sh install-http-bridge.sh; do
   [[ -f "$SCRIPT_DIR/$script" ]] || die "bundle is missing $script"
   chmod +x "$SCRIPT_DIR/$script"
 done
@@ -51,6 +51,11 @@ echo "ATLAS verifies a healthy heartbeat and live MUX traffic."
 "$SCRIPT_DIR/migrate-install-collector.sh" --site-config "$site_config"
 
 echo
+echo "Stage 3 installs the optional Meshtastic HTTP bridge for browser clients."
+"$SCRIPT_DIR/install-http-bridge.sh"
+
+echo
 echo "G2MS deployment is complete. Useful checks:"
-echo "  sudo systemctl status meshtastic-tcp-mux.service atlas-observer.service --no-pager"
+echo "  sudo systemctl status meshtastic-tcp-mux.service atlas-observer.service atlas-http-bridge.service --no-pager"
 echo "  sudo journalctl -u atlas-observer.service -n 50 --no-pager"
+echo "  curl -fsS http://127.0.0.1:4404/healthz"

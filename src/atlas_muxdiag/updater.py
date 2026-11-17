@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,15 @@ def main() -> int:
         raise SystemExit("update manifest must use HTTPS")
     root = Path(os.environ.get("ATLAS_RELEASE_ROOT", "/opt/atlas-observer")).resolve()
     service = os.environ.get("ATLAS_OBSERVER_SERVICE", "atlas-observer.service")
+    companions = shlex.split(os.environ.get("ATLAS_COMPANION_SERVICES", ""))
+    active_companions = [
+        item
+        for item in companions
+        if subprocess.run(
+            ["systemctl", "is-active", "--quiet", item], check=False, timeout=30
+        ).returncode
+        == 0
+    ]
     keep = max(2, int(os.environ.get("ATLAS_RELEASES_TO_KEEP", "2")))
     with urllib.request.urlopen(manifest_url, timeout=15) as response:
         manifest = json.load(response)
@@ -109,6 +119,9 @@ def main() -> int:
     try:
         run(["systemctl", "restart", service])
         run(["systemctl", "is-active", "--quiet", service])
+        for companion in active_companions:
+            run(["systemctl", "restart", companion])
+            run(["systemctl", "is-active", "--quiet", companion])
     except Exception:
         if previous_target is not None:
             rollback = root / ".current.rollback"
@@ -116,6 +129,8 @@ def main() -> int:
             rollback.symlink_to(previous_target)
             os.replace(rollback, current)
             subprocess.run(["systemctl", "restart", service], check=False)
+            for companion in active_companions:
+                subprocess.run(["systemctl", "restart", companion], check=False)
         raise
     installed = sorted(
         (path for path in releases.iterdir() if path.is_dir() and not path.name.startswith(".")),

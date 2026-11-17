@@ -23,6 +23,8 @@ end-to-end health check. The only private value entered is the G2MS site key;
 input is hidden and the generated environment file is installed root-only.
 If a legacy feeder is present, it is disabled only after the new collector is
 verified healthy. If no legacy feeder exists, installation continues normally.
+Finally, it installs an HTTP compatibility bridge on TCP port `4404` for
+browser clients that cannot connect directly to the native MUX stream.
 
 ## Prompt answers
 
@@ -34,3 +36,15 @@ verified healthy. If no legacy feeder exists, installation continues normally.
 
 Observer ID, node ID, collector MUX address, and ATLAS API address are built
 into the installer and are not prompted.
+
+## Browser client
+
+Choose **HTTP**, leave **HTTPS** off, and enter the collector host with port
+`4404`, for example:
+
+```text
+192.168.1.235:4404
+```
+
+Port `4404` must remain limited to the trusted LAN or VPN. The bridge does not
+provide authentication and must not be forwarded directly to the internet.
