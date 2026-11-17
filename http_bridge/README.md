@@ -31,12 +31,14 @@ collector. The default upstream is the local MUX at `127.0.0.1:4405`, and the
 default LAN-facing HTTP endpoint is port `4404`.
 
 ```bash
-tar -xzf meshtastic-http-bridge-deploy-0.1.0.tar.gz
-cd meshtastic-http-bridge-deploy-0.1.0
+tar -xzf meshtastic-http-bridge-deploy-0.1.1.tar.gz
+cd meshtastic-http-bridge-deploy-0.1.1
 ./install.sh
 ```
 
-The installer elevates through `sudo` when needed. Check the service with:
+The installer elevates through `sudo` when needed. It uses port `4404` when
+available, otherwise it selects and reports an available port from `4407`
+through `4410`. Check the service using the reported port:
 
 ```bash
 curl -fsS http://127.0.0.1:4404/healthz

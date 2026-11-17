@@ -1,3 +1,3 @@
 """Standalone Meshtastic HTTP-to-TCP bridge."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
