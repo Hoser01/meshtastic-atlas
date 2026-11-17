@@ -16,11 +16,9 @@ from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from google.protobuf.message import DecodeError
-
 from .framing import DEFAULT_MAX_PAYLOAD, FrameDecoder, frame_payload
 
-LOGGER = logging.getLogger("atlas_http_bridge")
+LOGGER = logging.getLogger("meshtastic_http_bridge")
 PROTOBUF_CONTENT_TYPE = "application/x-protobuf"
 PROTOBUF_SCHEMA = (
     "https://raw.githubusercontent.com/meshtastic/protobufs/master/meshtastic/mesh.proto"
@@ -127,7 +125,7 @@ class MuxBridge:
         if self._thread and self._thread.is_alive():
             return
         self.stop_event.clear()
-        self._thread = threading.Thread(target=self._run, name="atlas-http-mux", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="meshtastic-http-mux", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -212,14 +210,19 @@ class MuxBridge:
 
     @staticmethod
     def _is_config_request(payload: bytes) -> bool:
-        try:
-            from meshtastic.protobuf import mesh_pb2
-
-            message = mesh_pb2.ToRadio()
-            message.ParseFromString(payload)
-            return message.WhichOneof("payload_variant") == "want_config_id"
-        except (DecodeError, ImportError):
+        # ToRadio.want_config_id is protobuf field 3 with varint wire type (tag 0x18).
+        # ToRadio is a oneof envelope, so a valid configuration request starts with
+        # this tag and contains a non-zero varint value.
+        if len(payload) < 2 or payload[0] != 0x18:
             return False
+        value = 0
+        shift = 0
+        for byte in payload[1:7]:
+            value |= (byte & 0x7F) << shift
+            if not byte & 0x80:
+                return value > 0
+            shift += 7
+        return False
 
     def receive(self, drain_all: bool) -> bytes:
         return self.queue.pop(drain_all)
@@ -244,7 +247,7 @@ class MuxBridge:
 
 class BridgeRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "ATLAS-Meshtastic-HTTP-Bridge/0.1"
+    server_version = "Meshtastic-HTTP-Bridge/0.1"
 
     def __init__(self, *args: object, bridge: MuxBridge, **kwargs: object) -> None:
         self.bridge = bridge
@@ -296,7 +299,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if target.path == "/":
-            body = b"ATLAS Meshtastic HTTP bridge\n"
+            body = b"Meshtastic HTTP bridge for TCP MUX\n"
             self._respond(200, body, content_type="text/plain; charset=utf-8")
             return
         self._respond(404, b"not found\n", content_type="text/plain; charset=utf-8")
@@ -344,29 +347,39 @@ def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
-def _mux_env(http_name: str, observer_name: str, default: str) -> str:
-    return os.environ.get(http_name) or os.environ.get(observer_name) or default
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bridge Meshtastic HTTP clients to a TCP MUX")
     parser.add_argument(
-        "--mux-host", default=_mux_env("ATLAS_HTTP_MUX_HOST", "ATLAS_MUX_HOST", "127.0.0.1")
+        "--mux-host", default=_env("MESHTASTIC_HTTP_BRIDGE_MUX_HOST", "127.0.0.1")
     )
     parser.add_argument(
         "--mux-port",
         type=int,
-        default=int(_mux_env("ATLAS_HTTP_MUX_PORT", "ATLAS_MUX_PORT", "4405")),
+        default=int(_env("MESHTASTIC_HTTP_BRIDGE_MUX_PORT", "4405")),
     )
-    parser.add_argument("--listen-host", default=_env("ATLAS_HTTP_LISTEN_HOST", "127.0.0.1"))
-    parser.add_argument("--listen-port", type=int, default=int(_env("ATLAS_HTTP_LISTEN_PORT", "4404")))
-    parser.add_argument("--queue-frames", type=int, default=int(_env("ATLAS_HTTP_QUEUE_FRAMES", "4096")))
     parser.add_argument(
-        "--queue-bytes", type=int, default=int(_env("ATLAS_HTTP_QUEUE_BYTES", "2097152"))
+        "--listen-host", default=_env("MESHTASTIC_HTTP_BRIDGE_LISTEN_HOST", "127.0.0.1")
     )
-    parser.add_argument("--tls-cert", default=_env("ATLAS_HTTP_TLS_CERT", ""))
-    parser.add_argument("--tls-key", default=_env("ATLAS_HTTP_TLS_KEY", ""))
-    parser.add_argument("--log-level", default=_env("ATLAS_HTTP_LOG_LEVEL", "INFO"))
+    parser.add_argument(
+        "--listen-port",
+        type=int,
+        default=int(_env("MESHTASTIC_HTTP_BRIDGE_LISTEN_PORT", "4404")),
+    )
+    parser.add_argument(
+        "--queue-frames",
+        type=int,
+        default=int(_env("MESHTASTIC_HTTP_BRIDGE_QUEUE_FRAMES", "4096")),
+    )
+    parser.add_argument(
+        "--queue-bytes",
+        type=int,
+        default=int(_env("MESHTASTIC_HTTP_BRIDGE_QUEUE_BYTES", "2097152")),
+    )
+    parser.add_argument("--tls-cert", default=_env("MESHTASTIC_HTTP_BRIDGE_TLS_CERT", ""))
+    parser.add_argument("--tls-key", default=_env("MESHTASTIC_HTTP_BRIDGE_TLS_KEY", ""))
+    parser.add_argument(
+        "--log-level", default=_env("MESHTASTIC_HTTP_BRIDGE_LOG_LEVEL", "INFO")
+    )
     return parser
 
 

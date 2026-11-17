@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlas-muxdiag"
-version = "0.3.47"
+version = "0.3.48"
 description = "Read-only Meshtastic RF observation collector and diagnostics for ATLAS"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,14 +33,13 @@ atlas-mqtt-replay = "atlas_muxdiag.mqtt_replay:main"
 atlas-replay = "atlas_muxdiag.replay_cli:main"
 atlas-observer = "atlas_muxdiag.observer_cli:main"
 atlas-observer-update = "atlas_muxdiag.updater:main"
-atlas-http-bridge = "atlas_muxdiag.http_bridge:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "server/tests"]
-pythonpath = ["src", "server/src"]
+testpaths = ["tests", "server/tests", "http_bridge/tests"]
+pythonpath = ["src", "server/src", "http_bridge/src"]
 addopts = "-q"
 
 [tool.ruff]

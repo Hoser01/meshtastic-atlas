@@ -6,10 +6,9 @@ import threading
 import time
 
 import pytest
-from meshtastic.protobuf import mesh_pb2
 
-from atlas_muxdiag.framing import FrameDecoder, frame_payload
-from atlas_muxdiag.http_bridge import MuxBridge, PayloadQueue, build_server
+from meshtastic_http_bridge.bridge import MuxBridge, PayloadQueue, build_server
+from meshtastic_http_bridge.framing import FrameDecoder, frame_payload
 
 
 class FakeMux:
@@ -132,7 +131,7 @@ def test_put_toradio_adds_tcp_framing_and_echoes_body(running_bridge):
 def test_configuration_request_clears_stale_receive_queue(running_bridge):
     mux, bridge, port = running_bridge
     bridge.queue.put(b"stale-live-packet")
-    request_payload = mesh_pb2.ToRadio(want_config_id=69420).SerializeToString()
+    request_payload = b"\x18\xac\x9e\x04"  # ToRadio(want_config_id=69420)
     assert request(port, "PUT", "/api/v1/toradio", request_payload)[0] == 200
     assert mux.receive() == request_payload
     assert bridge.queue.snapshot()["queued_frames"] == 0

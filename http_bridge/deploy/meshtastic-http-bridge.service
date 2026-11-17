@@ -1,0 +1,20 @@
+[Unit]
+Description=Meshtastic HTTP PhoneAPI bridge for TCP MUX
+After=network-online.target meshtastic-tcp-mux.service
+Wants=network-online.target meshtastic-tcp-mux.service
+
+[Service]
+Type=simple
+User=meshtastic-http-bridge
+Group=meshtastic-http-bridge
+EnvironmentFile=/etc/meshtastic-http-bridge/bridge.env
+ExecStart=/opt/meshtastic-http-bridge/current/bin/meshtastic-http-bridge
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
