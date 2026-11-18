@@ -1,2 +1,0 @@
-[console_scripts]
-meshtastic-http-bridge = meshtastic_http_bridge.bridge:main
