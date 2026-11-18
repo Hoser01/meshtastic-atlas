@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meshtastic-http-bridge"
-version = "0.1.2"
+version = "0.2.0"
 description = "Standalone Meshtastic HTTP PhoneAPI bridge for native TCP MUX endpoints"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "GPL-3.0-only"
 authors = [{name = "ATLAS contributors"}]
+license-files = ["LICENSE-MIT"]
 dependencies = []
 
 [project.optional-dependencies]

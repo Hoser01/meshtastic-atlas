@@ -1,4 +1,10 @@
-"""Meshtastic HTTP PhoneAPI bridge backed by a native TCP MUX connection."""
+"""Meshtastic HTTP(S) API sidecar for an existing Meshtastic TCP MUX.
+
+No third-party Python packages are required. Each client IP + Origin has its
+own bounded receive queue and persistent downstream MUX connection. The MUX
+continues to own the single connection to the physical radio.
+SPDX-License-Identifier: MIT
+"""
 
 from __future__ import annotations
 
@@ -9,419 +15,647 @@ import os
 import signal
 import socket
 import ssl
+import struct
 import threading
 import time
 from collections import deque
-from functools import partial
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from .framing import DEFAULT_MAX_PAYLOAD, FrameDecoder, frame_payload
+from . import __version__
 
+VERSION = __version__
+MAGIC = b"\x94\xc3"
+MAX_PAYLOAD = 512
+PROTO_TYPE = "application/x-protobuf"
+SCHEMA = "https://raw.githubusercontent.com/meshtastic/protobufs/master/meshtastic/mesh.proto"
 LOGGER = logging.getLogger("meshtastic_http_bridge")
-PROTOBUF_CONTENT_TYPE = "application/x-protobuf"
-PROTOBUF_SCHEMA = (
-    "https://raw.githubusercontent.com/meshtastic/protobufs/master/meshtastic/mesh.proto"
-)
 
 
-class BridgeUnavailable(RuntimeError):
-    """Raised when the bridge cannot currently write to the TCP MUX."""
+def origin_of(value: str, *, allow_path: bool = False) -> str:
+    """Canonicalize an HTTP origin, rejecting credentials and opaque origins."""
+    if not value or any(ord(c) < 33 for c in value):
+        raise ValueError("A complete http:// or https:// web instance URL is required")
+    url = urlsplit(value)
+    if (
+        url.scheme not in ("http", "https")
+        or not url.hostname
+        or url.username is not None
+        or url.password is not None
+        or (not allow_path and (url.path not in ("", "/") or url.query or url.fragment))
+    ):
+        raise ValueError("Expected an HTTP(S) URL without credentials")
+    host = url.hostname.encode("idna").decode("ascii").lower()
+    if any(c not in "abcdefghijklmnopqrstuvwxyz0123456789.-:_" for c in host):
+        raise ValueError("Invalid hostname in web instance URL")
+    port = url.port  # Also validates malformed/out-of-range ports.
+    if ":" in host:
+        host = "[" + host + "]"
+    if port is not None and port != (443 if url.scheme == "https" else 80):
+        host += ":" + str(port)
+    return url.scheme + "://" + host
 
 
-class PayloadQueue:
-    """Thread-safe, oldest-first queue with hard frame and byte limits."""
+@dataclass(frozen=True)
+class Settings:
+    http_host: str = "0.0.0.0"
+    http_port: int = 4407
+    mux_host: str = "127.0.0.1"
+    mux_port: int = 4405
+    allowed_origins: tuple[str, ...] = ()
+    https_port: int = 0
+    tls_cert: str = ""
+    tls_key: str = ""
+    max_sessions: int = 8
+    max_queue_frames: int = 2048
+    max_queue_bytes: int = 1048576
+    idle_seconds: float = 120.0
+    connect_timeout: float = 2.0
+    max_http_threads: int = 32
 
-    def __init__(self, max_frames: int, max_bytes: int) -> None:
-        if max_frames < 1 or max_bytes < 1:
-            raise ValueError("queue limits must be positive")
-        self.max_frames = max_frames
-        self.max_bytes = max_bytes
-        self._items: deque[bytes] = deque()
-        self._bytes = 0
-        self._dropped = 0
-        self._lock = threading.Lock()
+    @classmethod
+    def from_env(cls) -> Settings:
+        e = os.environ
+        origins = tuple(
+            origin_of(v.strip())
+            for v in e.get("BRIDGE_ALLOWED_ORIGINS", "").split(",")
+            if v.strip()
+        )
+        result = cls(
+            http_host=e.get("BRIDGE_HTTP_HOST", "0.0.0.0"),
+            http_port=int(e.get("BRIDGE_HTTP_PORT", "4407")),
+            mux_host=e.get("BRIDGE_MUX_HOST", "127.0.0.1"),
+            mux_port=int(e.get("BRIDGE_MUX_PORT", "4405")),
+            allowed_origins=origins,
+            https_port=int(e.get("BRIDGE_HTTPS_PORT", "0")),
+            tls_cert=e.get("BRIDGE_TLS_CERT", ""),
+            tls_key=e.get("BRIDGE_TLS_KEY", ""),
+            max_sessions=int(e.get("BRIDGE_MAX_SESSIONS", "8")),
+            max_queue_frames=int(e.get("BRIDGE_MAX_QUEUE_FRAMES", "2048")),
+            max_queue_bytes=int(e.get("BRIDGE_MAX_QUEUE_BYTES", "1048576")),
+            idle_seconds=float(e.get("BRIDGE_IDLE_SECONDS", "120")),
+        )
+        result.validate()
+        return result
 
-    def put(self, payload: bytes) -> None:
-        if not payload:
-            return
-        with self._lock:
-            if len(payload) > self.max_bytes:
-                self._dropped += 1
-                return
-            while self._items and (
-                len(self._items) >= self.max_frames or self._bytes + len(payload) > self.max_bytes
-            ):
-                self._bytes -= len(self._items.popleft())
-                self._dropped += 1
-            self._items.append(payload)
-            self._bytes += len(payload)
+    def validate(self) -> None:
+        if not self.allowed_origins:
+            raise ValueError("BRIDGE_ALLOWED_ORIGINS must list your Meshtastic Web origin")
+        if any(origin_of(v) != v for v in self.allowed_origins):
+            raise ValueError("Allowed origins must be canonical HTTP(S) origins")
+        if any(not 1 <= p <= 65535 for p in (self.http_port, self.mux_port)):
+            raise ValueError("HTTP and MUX ports must be between 1 and 65535")
+        if not 0 <= self.https_port <= 65535:
+            raise ValueError("HTTPS port must be 0 (disabled) or a valid port")
+        ports = [self.http_port, self.mux_port] + ([self.https_port] if self.https_port else [])
+        if len(ports) != len(set(ports)):
+            raise ValueError("HTTP, HTTPS and MUX must use different ports")
+        if self.https_port and not (self.tls_cert and self.tls_key):
+            raise ValueError("HTTPS requires BRIDGE_TLS_CERT and BRIDGE_TLS_KEY")
+        if (
+            not self.http_host
+            or not self.mux_host
+            or self.idle_seconds <= 0
+            or min(
+                self.max_sessions,
+                self.max_queue_frames,
+                self.max_queue_bytes,
+                self.max_http_threads,
+            )
+            <= 0
+        ):
+            raise ValueError("Hosts and resource limits must be nonempty/positive")
 
-    def pop(self, drain_all: bool) -> bytes:
-        with self._lock:
-            if not self._items:
+
+class Unavailable(Exception):
+    """Safe, payload-free error suitable for an HTTP 503 response."""
+
+
+class FrameParser:
+    """Handle fragmented/coalesced TCP frames without exposing stream headers."""
+
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+
+    def feed(self, data: bytes) -> list[bytes]:
+        self.buffer.extend(data)
+        frames = []
+        while True:
+            start = self.buffer.find(MAGIC)
+            if start < 0:
+                # Keep a possible first magic byte split across recv() calls.
+                self.buffer[:] = self.buffer[-1:] if self.buffer[-1:] == MAGIC[:1] else b""
+                break
+            if start:
+                del self.buffer[:start]
+            if len(self.buffer) < 4:
+                break
+            length = struct.unpack(">H", self.buffer[2:4])[0]
+            if length > MAX_PAYLOAD:
+                del self.buffer[0]
+                continue
+            if len(self.buffer) < 4 + length:
+                break
+            payload = bytes(self.buffer[4 : 4 + length])
+            del self.buffer[: 4 + length]
+            if payload:
+                frames.append(payload)
+        return frames
+
+
+def stream_frame(payload: bytes) -> bytes:
+    if not 1 <= len(payload) <= MAX_PAYLOAD:
+        raise ValueError("A ToRadio payload must contain 1 to 512 bytes")
+    return MAGIC + struct.pack(">H", len(payload)) + payload
+
+
+class Session:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.lock = threading.Lock()
+        self.io_lock = threading.Lock()
+        self.queue: deque[bytes] = deque()
+        self.queue_bytes = 0
+        self.last_seen = time.monotonic()
+        self.error: str | None = None
+        self.sock: socket.socket | None = None
+        self.reader: threading.Thread | None = None
+
+    def touch(self) -> None:
+        with self.lock:
+            self.last_seen = time.monotonic()
+
+    def failed(self) -> bool:
+        with self.lock:
+            return self.error is not None
+
+    def _connect_locked(self) -> socket.socket:
+        # Caller holds io_lock; never retry a write after a partial send.
+        with self.lock:
+            if self.error:
+                raise Unavailable(self.error)
+            if self.sock is not None:
+                return self.sock
+        try:
+            sock = socket.create_connection(
+                (self.settings.mux_host, self.settings.mux_port),
+                timeout=self.settings.connect_timeout,
+            )
+            sock.settimeout(1.0)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        except OSError:
+            self.close("MUX connection failed; reconnect the web client")
+            raise Unavailable("MUX connection failed; reconnect the web client") from None
+        with self.lock:
+            if self.error:
+                sock.close()
+                raise Unavailable(self.error)
+            self.sock = sock
+            self.reader = threading.Thread(target=self._read_loop, args=(sock,), daemon=True)
+            self.reader.start()
+        return sock
+
+    def ensure_connected(self) -> None:
+        with self.io_lock:
+            self._connect_locked()
+
+    def send(self, payload: bytes) -> None:
+        framed = stream_frame(payload)
+        with self.io_lock:
+            sock = self._connect_locked()
+            try:
+                sock.sendall(framed)
+            except OSError:
+                self.close("MUX write failed; delivery is unknown; reconnect the web client")
+                raise Unavailable(
+                    "MUX write failed; delivery is unknown; reconnect the web client"
+                ) from None
+
+    def receive(self, all_messages: bool = False) -> bytes:
+        self.ensure_connected()
+        with self.lock:
+            if self.error:
+                raise Unavailable(self.error)
+            if not self.queue:
                 return b""
-            if not drain_all:
-                payload = self._items.popleft()
-                self._bytes -= len(payload)
-                return payload
-            payload = b"".join(self._items)
-            self._items.clear()
-            self._bytes = 0
-            return payload
+            if all_messages:
+                result = b"".join(self.queue)
+                self.queue.clear()
+                self.queue_bytes = 0
+                return result
+            result = self.queue.popleft()
+            self.queue_bytes -= len(result)
+            return result
 
-    def clear(self) -> int:
-        with self._lock:
-            removed = len(self._items)
-            self._items.clear()
-            self._bytes = 0
-            return removed
+    def _read_loop(self, sock: socket.socket) -> None:
+        parser = FrameParser()
+        try:
+            while not self.failed():
+                try:
+                    data = sock.recv(4096)
+                except TimeoutError:
+                    continue
+                if not data:
+                    break
+                for payload in parser.feed(data):
+                    with self.lock:
+                        if self.error:
+                            return
+                        overflow = (
+                            len(self.queue) >= self.settings.max_queue_frames
+                            or self.queue_bytes + len(payload) > self.settings.max_queue_bytes
+                        )
+                        if not overflow:
+                            self.queue.append(payload)
+                            self.queue_bytes += len(payload)
+                    if overflow:
+                        self.close("Receive queue overflow; reconnect the web client")
+                        return
+        except OSError:
+            pass
+        finally:
+            self.close("MUX disconnected; reconnect the web client")
 
-    def snapshot(self) -> dict[str, int]:
-        with self._lock:
-            return {
-                "queued_frames": len(self._items),
-                "queued_bytes": self._bytes,
-                "dropped_frames": self._dropped,
-            }
-
-
-class MuxBridge:
-    """Maintain one reconnecting MUX connection and translate its framed stream."""
-
-    def __init__(
-        self,
-        host: str,
-        port: int,
-        *,
-        reconnect_seconds: float = 2.0,
-        connect_timeout: float = 5.0,
-        send_timeout: float = 3.0,
-        max_payload: int = DEFAULT_MAX_PAYLOAD,
-        queue_frames: int = 4096,
-        queue_bytes: int = 2 * 1024 * 1024,
-    ) -> None:
-        self.host = host
-        self.port = port
-        self.reconnect_seconds = reconnect_seconds
-        self.connect_timeout = connect_timeout
-        self.send_timeout = send_timeout
-        self.max_payload = max_payload
-        self.queue = PayloadQueue(queue_frames, queue_bytes)
-        self.stop_event = threading.Event()
-        self.connected = threading.Event()
-        self._socket: socket.socket | None = None
-        self._socket_lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-        self._stats_lock = threading.Lock()
-        self._started_at = time.monotonic()
-        self._connections = 0
-        self._disconnects = 0
-        self._frames_from_mux = 0
-        self._frames_to_mux = 0
-        self._errors = 0
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self.stop_event.clear()
-        self._thread = threading.Thread(target=self._run, name="meshtastic-http-mux", daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self.stop_event.set()
-        with self._socket_lock:
-            sock, self._socket = self._socket, None
-        self.connected.clear()
+    def close(self, reason: str) -> None:
+        with self.lock:
+            if self.error:
+                return
+            self.error = reason
+            self.queue.clear()
+            self.queue_bytes = 0
+            sock = self.sock
         if sock is not None:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
             sock.close()
-        if self._thread and self._thread is not threading.current_thread():
-            self._thread.join(timeout=5)
 
-    def _increment(self, field: str) -> None:
-        with self._stats_lock:
-            setattr(self, field, getattr(self, field) + 1)
 
-    def _run(self) -> None:
-        while not self.stop_event.is_set():
-            sock: socket.socket | None = None
+class Sessions:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.lock = threading.Lock()
+        self.items: dict[tuple[str, str], Session] = {}
+        self.stopped = threading.Event()
+        self.janitor = threading.Thread(target=self._reap_loop, daemon=True)
+        self.janitor.start()
+
+    def get(self, key: tuple[str, str], *, writing: bool = False) -> Session:
+        with self.lock:
+            if self.stopped.is_set():
+                raise Unavailable("Bridge is stopping")
+            self._reap_locked()
+            session = self.items.get(key)
+            # A fresh PUT (normally want_config_id) starts a new connection after
+            # failure. GETs keep returning 503 so an outage is not hidden.
+            if session is not None and writing and session.failed():
+                del self.items[key]
+                session = None
+            if session is None:
+                if len(self.items) >= self.settings.max_sessions:
+                    raise Unavailable("Web client session limit reached")
+                session = self.items[key] = Session(self.settings)
+            session.touch()
+            return session
+
+    def _reap_locked(self) -> None:
+        now = time.monotonic()
+        for key, session in list(self.items.items()):
+            with session.lock:
+                expired = now - session.last_seen >= self.settings.idle_seconds
+            if expired:
+                del self.items[key]
+                session.close("Web client session expired")
+
+    def _reap_loop(self) -> None:
+        while not self.stopped.wait(min(5.0, self.settings.idle_seconds)):
+            with self.lock:
+                self._reap_locked()
+
+    def close(self) -> None:
+        self.stopped.set()
+        with self.lock:
+            sessions = list(self.items.values())
+            self.items.clear()
+        for session in sessions:
+            session.close("Bridge is stopping")
+        self.janitor.join(timeout=2)
+
+
+class BridgeServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 32
+
+    def __init__(self, address: tuple[str, int], sessions: Sessions) -> None:
+        self.sessions = sessions
+        self.tls_context: ssl.SSLContext | None = None
+        self.slots = threading.BoundedSemaphore(sessions.settings.max_http_threads)
+        super().__init__(address, Handler)
+
+    def get_request(self) -> tuple[socket.socket, tuple]:
+        request, address = super().get_request()
+        if self.tls_context is not None:
             try:
-                sock = socket.create_connection(
-                    (self.host, self.port), timeout=self.connect_timeout
+                # The handshake happens in a bounded worker, not the accept loop.
+                request = self.tls_context.wrap_socket(
+                    request, server_side=True, do_handshake_on_connect=False
                 )
-                sock.settimeout(1.0)
-                with self._socket_lock:
-                    self._socket = sock
-                self.connected.set()
-                self._increment("_connections")
-                LOGGER.info("connected to Meshtastic TCP MUX at %s:%d", self.host, self.port)
-                decoder = FrameDecoder(self.max_payload)
-                while not self.stop_event.is_set():
-                    try:
-                        chunk = sock.recv(16384)
-                    except TimeoutError:
-                        continue
-                    if not chunk:
-                        raise ConnectionError("MUX closed the connection")
-                    for frame in decoder.feed(chunk):
-                        self.queue.put(frame.payload)
-                        self._increment("_frames_from_mux")
-            except (OSError, ConnectionError) as exc:
-                if not self.stop_event.is_set():
-                    self._increment("_errors")
-                    LOGGER.warning("MUX connection unavailable: %s", exc)
-            finally:
-                was_connected = self.connected.is_set()
-                self.connected.clear()
-                with self._socket_lock:
-                    if self._socket is sock:
-                        self._socket = None
-                if sock is not None:
-                    sock.close()
-                if was_connected:
-                    self._increment("_disconnects")
-            self.stop_event.wait(self.reconnect_seconds)
+            except Exception:
+                request.close()
+                raise
+        return request, address
 
-    def send(self, payload: bytes) -> None:
-        if not payload:
-            raise ValueError("ToRadio payload must not be empty")
-        if len(payload) > self.max_payload:
-            raise ValueError(f"ToRadio payload exceeds {self.max_payload} bytes")
-        if self._is_config_request(payload):
-            removed = self.queue.clear()
-            if removed:
-                LOGGER.info("cleared %d stale frames before configuration handshake", removed)
-        if not self.connected.wait(self.send_timeout):
-            raise BridgeUnavailable("TCP MUX is not connected")
-        framed = frame_payload(payload)
+    def process_request(self, request: socket.socket, client_address: tuple) -> None:
+        if not self.slots.acquire(blocking=False):
+            # Do not create more threads or block the accept loop on a slow peer.
+            self.shutdown_request(request)
+            return
         try:
-            with self._socket_lock:
-                if self._socket is None:
-                    raise BridgeUnavailable("TCP MUX is not connected")
-                self._socket.sendall(framed)
-        except OSError as exc:
-            self._increment("_errors")
-            raise BridgeUnavailable(f"TCP MUX write failed: {exc}") from exc
-        self._increment("_frames_to_mux")
+            super().process_request(request, client_address)
+        except Exception:
+            self.slots.release()
+            raise
 
-    @staticmethod
-    def _is_config_request(payload: bytes) -> bool:
-        # ToRadio.want_config_id is protobuf field 3 with varint wire type (tag 0x18).
-        # ToRadio is a oneof envelope, so a valid configuration request starts with
-        # this tag and contains a non-zero varint value.
-        if len(payload) < 2 or payload[0] != 0x18:
-            return False
-        value = 0
-        shift = 0
-        for byte in payload[1:7]:
-            value |= (byte & 0x7F) << shift
-            if not byte & 0x80:
-                return value > 0
-            shift += 7
-        return False
+    def process_request_thread(self, request: socket.socket, client_address: tuple) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
 
-    def receive(self, drain_all: bool) -> bytes:
-        return self.queue.pop(drain_all)
-
-    def snapshot(self) -> dict[str, int | float | bool | str]:
-        with self._stats_lock:
-            result: dict[str, int | float | bool | str] = {
-                "status": "ok" if self.connected.is_set() else "degraded",
-                "mux_connected": self.connected.is_set(),
-                "mux_host": self.host,
-                "mux_port": self.port,
-                "uptime_seconds": round(time.monotonic() - self._started_at, 1),
-                "connections": self._connections,
-                "disconnects": self._disconnects,
-                "frames_from_mux": self._frames_from_mux,
-                "frames_to_mux": self._frames_to_mux,
-                "errors": self._errors,
-            }
-        result.update(self.queue.snapshot())
-        return result
+    def handle_error(self, request: socket.socket, client_address: tuple) -> None:
+        LOGGER.warning("HTTP client connection ended unexpectedly")
 
 
-class BridgeRequestHandler(BaseHTTPRequestHandler):
+class Handler(BaseHTTPRequestHandler):
+    server: BridgeServer
     protocol_version = "HTTP/1.1"
-    server_version = "Meshtastic-HTTP-Bridge/0.1"
+    server_version = "MeshtasticHTTPBridge/" + VERSION
+    sys_version = ""
 
-    def __init__(self, *args: object, bridge: MuxBridge, **kwargs: object) -> None:
-        self.bridge = bridge
-        super().__init__(*args, **kwargs)
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(10)
+        if isinstance(self.connection, ssl.SSLSocket):
+            self.connection.do_handshake()
 
-    def _cors_headers(self, methods: str) -> None:
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", methods)
-        self.send_header("Access-Control-Allow-Private-Network", "true")
-        self.send_header("Cache-Control", "no-store")
+    def log_message(self, fmt: str, *args: object) -> None:
+        # Never log protobufs, request bodies, tokens, or query strings.
+        LOGGER.debug("HTTP request completed")
 
-    def _respond(
+    def _origin(self) -> str:
+        values = self.headers.get_all("Origin", [])
+        if len(values) > 1:
+            raise ValueError("Multiple Origin headers are not supported")
+        if not values:
+            # Normal curl/CLI requests have no Origin. Reject browser no-cors
+            # subresource requests so they cannot drain a session's queue.
+            if self.headers.get("Sec-Fetch-Mode") == "no-cors":
+                raise ValueError("Cross-origin API requests must use CORS")
+            return ""
+        origin = origin_of(values[0])
+        if origin not in self.server.sessions.settings.allowed_origins:
+            raise ValueError("Web origin is not allowed; update BRIDGE_ALLOWED_ORIGINS")
+        return origin
+
+    def _reply(
         self,
         status: int,
         body: bytes = b"",
+        kind: str = "application/json",
+        origin: str = "",
         *,
-        content_type: str = PROTOBUF_CONTENT_TYPE,
-        methods: str = "GET, PUT, OPTIONS",
+        preflight: bool = False,
     ) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("X-Protobuf-Schema", PROTOBUF_SCHEMA)
-        self._cors_headers(methods)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Vary", "Origin, Access-Control-Request-Private-Network")
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+        if preflight:
+            self.send_header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept")
+            self.send_header("Access-Control-Max-Age", "600")
+            if self.headers.get("Access-Control-Request-Private-Network", "").lower() == "true":
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+        if kind == PROTO_TYPE:
+            self.send_header("X-Protobuf-Schema", SCHEMA)
         self.end_headers()
-        if body:
+        if body and self.command != "HEAD":
             self.wfile.write(body)
 
-    def do_OPTIONS(self) -> None:
-        path = urlsplit(self.path).path
-        if path not in ("/api/v1/toradio", "/api/v1/fromradio"):
-            self._respond(404, content_type="text/plain; charset=utf-8")
-            return
-        self._respond(204)
+    def _json(self, status: int, value: dict, origin: str = "") -> None:
+        self._reply(status, json.dumps(value, separators=(",", ":")).encode(), origin=origin)
 
-    def do_GET(self) -> None:
-        target = urlsplit(self.path)
-        if target.path == "/api/v1/fromradio":
-            drain_all = parse_qs(target.query).get("all", ["false"])[0].lower() == "true"
-            self._respond(200, self.bridge.receive(drain_all), methods="GET, OPTIONS")
-            return
-        if target.path == "/healthz":
-            body = (json.dumps(self.bridge.snapshot(), separators=(",", ":")) + "\n").encode()
-            self._respond(
-                200 if self.bridge.connected.is_set() else 503,
-                body,
-                content_type="application/json",
-            )
-            return
-        if target.path == "/":
-            body = b"Meshtastic HTTP bridge for TCP MUX\n"
-            self._respond(200, body, content_type="text/plain; charset=utf-8")
-            return
-        self._respond(404, b"not found\n", content_type="text/plain; charset=utf-8")
-
-    def do_PUT(self) -> None:
-        if urlsplit(self.path).path != "/api/v1/toradio":
-            self._respond(404, b"not found\n", content_type="text/plain; charset=utf-8")
-            return
+    def _dispatch(self) -> None:
+        origin = ""
         try:
-            length = int(self.headers.get("Content-Length", ""))
+            if len(self.path) > 4096:
+                self._json(414, {"error": "Request URL is too long"})
+                return
+            url = urlsplit(self.path)
+            if url.scheme or url.netloc:
+                self._json(400, {"error": "Absolute request targets are not supported"})
+                return
+            if url.path in ("/", "/healthz") and self.command in ("GET", "HEAD"):
+                # Reachability checks never create a session or drain radio data.
+                raw_origin = self.headers.get("Origin", "")
+                if raw_origin:
+                    origin = self._origin()
+                if url.path == "/healthz":
+                    settings = self.server.sessions.settings
+                    try:
+                        with socket.create_connection(
+                            (settings.mux_host, settings.mux_port), timeout=settings.connect_timeout
+                        ):
+                            pass
+                        reachable = True
+                    except OSError:
+                        reachable = False
+                    self._json(
+                        200 if reachable else 503,
+                        {
+                            "service": "meshtastic-http-bridge",
+                            "version": VERSION,
+                            "mux_tcp_reachable": reachable,
+                            "radio_link_verified": False,
+                        },
+                        origin,
+                    )
+                else:
+                    self._json(
+                        200,
+                        {
+                            "service": "meshtastic-http-bridge",
+                            "version": VERSION,
+                            "api": ["/api/v1/toradio", "/api/v1/fromradio"],
+                        },
+                        origin,
+                    )
+                return
+            if url.path not in ("/api/v1/toradio", "/api/v1/fromradio"):
+                self._json(404, {"error": "Unknown endpoint"})
+                return
+            origin = self._origin()
+            if self.command == "OPTIONS":
+                requested = {
+                    v.strip().lower()
+                    for v in self.headers.get("Access-Control-Request-Headers", "").split(",")
+                    if v.strip()
+                }
+                if requested - {"content-type", "accept"}:
+                    self._json(400, {"error": "Unsupported CORS request header"}, origin)
+                    return
+                self._reply(204, origin=origin, preflight=True)
+                return
+            key = (self.client_address[0], origin)
+            # The direct peer is deliberate: never trust forwarded-IP headers
+            # from LAN clients. Proxy deployments require a separate instance
+            # per user, as described in README.md.
+            if self.command == "GET" and url.path == "/api/v1/fromradio":
+                query = parse_qs(url.query)
+                if query.get("chunked", ["false"])[0].lower() == "true":
+                    self._json(400, {"error": "Chunked API streaming is not supported"}, origin)
+                    return
+                session = self.server.sessions.get(key)
+                payload = session.receive(query.get("all", ["false"])[0].lower() == "true")
+                self._reply(200, payload, PROTO_TYPE, origin)
+                return
+            if self.command == "PUT" and url.path == "/api/v1/toradio":
+                if self.headers.get("Transfer-Encoding") is not None:
+                    self.close_connection = True
+                    self._json(
+                        400,
+                        {"error": "Use Content-Length; chunked request bodies are unsupported"},
+                        origin,
+                    )
+                    return
+                lengths = self.headers.get_all("Content-Length", [])
+                if len(lengths) != 1:
+                    self.close_connection = True
+                    self._json(411, {"error": "One Content-Length header is required"}, origin)
+                    return
+                try:
+                    length = int(lengths[0])
+                except ValueError:
+                    length = -1
+                if not 1 <= length <= MAX_PAYLOAD:
+                    self.close_connection = True
+                    self._json(
+                        413 if length > MAX_PAYLOAD else 400,
+                        {"error": "A ToRadio body must contain 1 to 512 bytes"},
+                        origin,
+                    )
+                    return
+                if self.headers.get_content_type() not in (PROTO_TYPE, "application/octet-stream"):
+                    self.close_connection = True
+                    self._json(415, {"error": "Use Content-Type: application/x-protobuf"}, origin)
+                    return
+                payload = self.rfile.read(length)
+                if len(payload) != length:
+                    self.close_connection = True
+                    self._json(400, {"error": "Incomplete request body"}, origin)
+                    return
+                session = self.server.sessions.get(key, writing=True)
+                session.send(payload)
+                # Matches the device API's byte-for-byte PUT echo. This means
+                # handed to MUX TCP, not RF acknowledgement or filter approval.
+                self._reply(200, payload, PROTO_TYPE, origin)
+                return
+            self._json(405, {"error": "Method is not supported for this endpoint"}, origin)
         except ValueError:
-            length = -1
-        if length < 1:
-            self._respond(400, b"ToRadio body is required\n", content_type="text/plain")
-            return
-        if length > self.bridge.max_payload:
-            self._respond(413, b"ToRadio body is too large\n", content_type="text/plain")
-            return
-        payload = self.rfile.read(length)
-        if len(payload) != length:
-            self._respond(400, b"incomplete request body\n", content_type="text/plain")
-            return
-        try:
-            self.bridge.send(payload)
-        except (BridgeUnavailable, ValueError) as exc:
-            self._respond(503, (str(exc) + "\n").encode(), content_type="text/plain")
-            return
-        # Match current firmware behavior: echo the accepted naked protobuf.
-        self._respond(200, payload, methods="PUT, OPTIONS")
+            self.close_connection = True
+            self._json(403, {"error": "Invalid or disallowed web origin/request"})
+        except Unavailable as exc:
+            self._json(503, {"error": str(exc)}, origin)
+        except (TimeoutError, BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
-    def log_message(self, message: str, *args: object) -> None:
-        LOGGER.debug("%s - %s", self.client_address[0], message % args)
+    do_GET = _dispatch
+    do_HEAD = _dispatch
+    do_PUT = _dispatch
+    do_OPTIONS = _dispatch
+    do_POST = _dispatch
+    do_DELETE = _dispatch
 
 
-class BridgeHTTPServer(ThreadingHTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-
-
-def build_server(host: str, port: int, bridge: MuxBridge) -> BridgeHTTPServer:
-    return BridgeHTTPServer((host, port), partial(BridgeRequestHandler, bridge=bridge))
-
-
-def _env(name: str, default: str) -> str:
-    return os.environ.get(name, default)
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Bridge Meshtastic HTTP clients to a TCP MUX")
-    parser.add_argument(
-        "--mux-host", default=_env("MESHTASTIC_HTTP_BRIDGE_MUX_HOST", "127.0.0.1")
-    )
-    parser.add_argument(
-        "--mux-port",
-        type=int,
-        default=int(_env("MESHTASTIC_HTTP_BRIDGE_MUX_PORT", "4405")),
-    )
-    parser.add_argument(
-        "--listen-host", default=_env("MESHTASTIC_HTTP_BRIDGE_LISTEN_HOST", "127.0.0.1")
-    )
-    parser.add_argument(
-        "--listen-port",
-        type=int,
-        default=int(_env("MESHTASTIC_HTTP_BRIDGE_LISTEN_PORT", "4404")),
-    )
-    parser.add_argument(
-        "--queue-frames",
-        type=int,
-        default=int(_env("MESHTASTIC_HTTP_BRIDGE_QUEUE_FRAMES", "4096")),
-    )
-    parser.add_argument(
-        "--queue-bytes",
-        type=int,
-        default=int(_env("MESHTASTIC_HTTP_BRIDGE_QUEUE_BYTES", "2097152")),
-    )
-    parser.add_argument("--tls-cert", default=_env("MESHTASTIC_HTTP_BRIDGE_TLS_CERT", ""))
-    parser.add_argument("--tls-key", default=_env("MESHTASTIC_HTTP_BRIDGE_TLS_KEY", ""))
-    parser.add_argument(
-        "--log-level", default=_env("MESHTASTIC_HTTP_BRIDGE_LOG_LEVEL", "INFO")
-    )
-    return parser
-
-
-def main() -> int:
-    args = build_parser().parse_args()
-    if not 1 <= args.mux_port <= 65535 or not 1 <= args.listen_port <= 65535:
-        raise SystemExit("ports must be between 1 and 65535")
-    if bool(args.tls_cert) != bool(args.tls_key):
-        raise SystemExit("both --tls-cert and --tls-key are required for TLS")
-    logging.basicConfig(
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    bridge = MuxBridge(
-        args.mux_host,
-        args.mux_port,
-        queue_frames=args.queue_frames,
-        queue_bytes=args.queue_bytes,
-    )
-    server = build_server(args.listen_host, args.listen_port, bridge)
-    if args.tls_cert:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(args.tls_cert, args.tls_key)
-        server.socket = context.wrap_socket(server.socket, server_side=True)
-    scheme = "https" if args.tls_cert else "http"
-    LOGGER.info(
-        "serving Meshtastic HTTP API at %s://%s:%d", scheme, args.listen_host, args.listen_port
-    )
-
-    def stop(_signum: int, _frame: object) -> None:
-        threading.Thread(target=server.shutdown, daemon=True).start()
-
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
-    bridge.start()
+def build_servers(settings: Settings, sessions: Sessions) -> list[BridgeServer]:
+    servers: list[BridgeServer] = []
     try:
-        server.serve_forever(poll_interval=0.5)
+        servers.append(BridgeServer((settings.http_host, settings.http_port), sessions))
+        if settings.https_port:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(settings.tls_cert, settings.tls_key)
+            server = BridgeServer((settings.http_host, settings.https_port), sessions)
+            servers.append(server)
+            server.tls_context = context
+        return servers
+    except Exception:
+        for server in servers:
+            server.server_close()
+        raise
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action="version", version=VERSION)
+    parser.add_argument("--check-config", action="store_true")
+    args = parser.parse_args()
+    try:
+        settings = Settings.from_env()
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.check_config:
+        print(
+            json.dumps(
+                {
+                    "version": VERSION,
+                    "http_port": settings.http_port,
+                    "https_port": settings.https_port,
+                    "mux": f"{settings.mux_host}:{settings.mux_port}",
+                    "allowed_origins": settings.allowed_origins,
+                }
+            )
+        )
+        return
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    stop = threading.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_args: stop.set())
+    sessions = Sessions(settings)
+    servers: list[BridgeServer] = []
+    threads: list[threading.Thread] = []
+    try:
+        servers = build_servers(settings, sessions)
+        for server in servers:
+            thread = threading.Thread(
+                target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True
+            )
+            thread.start()
+            threads.append(thread)
+        LOGGER.info(
+            "Bridge %s ready: HTTP=%d HTTPS=%d; MUX=%s:%d",
+            VERSION,
+            settings.http_port,
+            settings.https_port,
+            settings.mux_host,
+            settings.mux_port,
+        )
+        while not stop.wait(1.0):
+            if not all(thread.is_alive() for thread in threads):
+                raise RuntimeError("HTTP listener exited unexpectedly")
     finally:
-        server.server_close()
-        bridge.stop()
-    return 0
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        sessions.close()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

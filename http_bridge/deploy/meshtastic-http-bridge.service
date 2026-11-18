@@ -8,6 +8,7 @@ Type=simple
 User=meshtastic-http-bridge
 Group=meshtastic-http-bridge
 EnvironmentFile=/etc/meshtastic-http-bridge/bridge.env
+ExecStartPre=/opt/meshtastic-http-bridge/current/bin/meshtastic-http-bridge --check-config
 ExecStart=/opt/meshtastic-http-bridge/current/bin/meshtastic-http-bridge
 Restart=always
 RestartSec=3
