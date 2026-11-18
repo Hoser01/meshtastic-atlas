@@ -78,6 +78,12 @@ def index():
     }
 
 
+@app.get("/healthz")
+def healthz():
+    """Process liveness only; no Atlas fetch or cached-feed readiness claim."""
+    return jsonify({"status": "ok", "check": "liveness", "dependencies_checked": False}), 200, {"Cache-Control": "no-store"}
+
+
 @app.get("/health")
 def health():
     nodes = fetch_atlas_nodes()

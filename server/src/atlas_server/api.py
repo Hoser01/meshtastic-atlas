@@ -7,18 +7,19 @@ import hmac
 import json
 import math
 import os
+import sqlite3
 import threading
 import time
 from collections import defaultdict
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from .live import LiveBroker
@@ -155,6 +156,26 @@ def create_app(
             "positioned": 1,
             "position_source": "CONFIGURED_OBSERVER",
         }
+
+    @app.get("/api/v1/healthz")
+    async def healthz() -> JSONResponse:
+        """Process liveness only: deliberately performs no database or feed work."""
+        return JSONResponse({"status": "ok", "check": "liveness", "dependencies_checked": False},
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/v1/readyz")
+    def readyz() -> JSONResponse:
+        """Cheap database metadata read; does not assert collector/feed health."""
+        try:
+            uri = Path(database).resolve().as_uri() + "?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True, timeout=0.05)) as connection:
+                connection.execute("SELECT name FROM sqlite_schema LIMIT 1").fetchone()
+        except (sqlite3.Error, OSError, ValueError):
+            return JSONResponse({"status": "error", "check": "readiness", "database": "unavailable"},
+                                status_code=503, headers={"Cache-Control": "no-store"})
+        return JSONResponse({"status": "ok", "check": "readiness", "database": "readable",
+                             "scope": "Database metadata read only; collectors and full queries are not checked"},
+                            headers={"Cache-Control": "no-store"})
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
