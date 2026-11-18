@@ -124,9 +124,11 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
   </div>;
 }
 
-type TourStep = { target: string; title: string; text: string; opensNode?: boolean; opensLayers?: boolean };
+type TourStep = { target: string; title: string; text: string; opensNode?: boolean; opensLayers?: boolean; opensObservers?: boolean };
 const tourSteps: TourStep[] = [
-  { target: "[data-tour='topbar']", title: "Status and display", text: "A pulsing red dot means LIVE, purple means REPLAY, and yellow means PAUSED. Click the status indicator to return to live activity. This bar also shows network totals, text size, Help, and the legend." },
+  { target: "[data-tour='topbar']", title: "Status and display", text: "A pulsing red dot means LIVE, purple means REPLAY, and yellow means PAUSED. Click the status indicator to return to live activity. This bar also shows network totals, text size, observer health, Help, and the legend." },
+  { target: "[data-tour='observer-control']", title: "Observer health", text: "The radio-tower button opens network operations. It shows whether each remote collector, its MUX connection, and delivery path are healthy." },
+  { target: "[data-tour='observer-detail']", title: "Observer details", text: "ATLAS opened the dashboard and selected an observer. Online means its heartbeat, MUX, and queue are healthy. Quiet means it is connected but has not supplied unique direct-RF evidence within an hour. Inspect uptime, frame progress, reconnect epoch, queue depth, recent RF, warnings, and registered site information here.", opensObservers: true },
   { target: "[data-tour='network']", title: "Find and filter nodes", text: "Search by name or ID. The list has one row per known node, ordered by when it was last heard." },
   { target: "[data-tour='map-tools']", title: "Map controls", text: "Reset the regional view, open provenance or layers, and change map zoom." },
   { target: "[data-tour='layers']", title: "Map layers", text: "Layers has been opened for you. Toggle nodes, Predicted RF Coverage and its yellow opportunity stars, RF Reachability, recent Activity Heatmap, or Live Packet Paths. These overlays answer different questions and can be combined.", opensLayers: true },
@@ -137,11 +139,13 @@ const tourSteps: TourStep[] = [
   { target: "[data-tour='footer']", title: "LZMesh links", text: "The LZMesh badge returns to the main community website. The copyright identifies ATLAS as an LZMesh project, and desktop links open the community channels." },
 ];
 
-export function GuidedTour({ onClose, onShowNode, onShowLayers }: { onClose: () => void; onShowNode: () => void; onShowLayers: () => void }) {
+export function GuidedTour({ onClose, onShowNode, onShowLayers, onShowObservers }: { onClose: () => void; onShowNode: () => void; onShowLayers: () => void; onShowObservers: (open: boolean) => void }) {
   const showNode = useRef(onShowNode);
   const showLayers = useRef(onShowLayers);
+  const showObservers = useRef(onShowObservers);
   useEffect(() => { showNode.current = onShowNode; }, [onShowNode]);
   useEffect(() => { showLayers.current = onShowLayers; }, [onShowLayers]);
+  useEffect(() => { showObservers.current = onShowObservers; }, [onShowObservers]);
   const [visibleSteps, setVisibleSteps] = useState<TourStep[]>([]);
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -149,7 +153,7 @@ export function GuidedTour({ onClose, onShowNode, onShowLayers }: { onClose: () 
   // Resolve responsive targets after mount; hidden mobile controls are skipped.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setVisibleSteps(tourSteps.filter((candidate) => {
-    if (candidate.opensNode) return true;
+    if (candidate.opensNode || candidate.opensObservers) return true;
     const element = document.querySelector(candidate.target);
     if (!(element instanceof HTMLElement)) return false;
     const bounds = element.getBoundingClientRect();
@@ -157,10 +161,11 @@ export function GuidedTour({ onClose, onShowNode, onShowLayers }: { onClose: () 
   })), []);
   useEffect(() => {
     if (!step) return;
+    showObservers.current(Boolean(step.opensObservers));
     if (step.opensNode) showNode.current();
     if (step.opensLayers) showLayers.current();
     const update = () => setRect(document.querySelector(step.target)?.getBoundingClientRect() ?? null);
-    const frame = window.setTimeout(update, step.opensNode || step.opensLayers ? 450 : 0);
+    const frame = window.setTimeout(update, step.opensNode || step.opensLayers || step.opensObservers ? 550 : 0);
     window.addEventListener("resize", update);
     return () => { window.clearTimeout(frame); window.removeEventListener("resize", update); };
   }, [step]);

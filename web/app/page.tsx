@@ -1657,7 +1657,7 @@ export default function Home() {
         </div>
         <div className="top-actions">
           <div className="text-scale-control" aria-label="Interface text size"><button onClick={() => adjustUiScale(-0.05)} disabled={uiScale <= 0.9} aria-label="Decrease interface size"><Minus size={13} /></button><span>{Math.round(uiScale * 100)}%</span><button onClick={() => adjustUiScale(0.05)} disabled={uiScale >= 1.4} aria-label="Increase interface size"><Plus size={13} /></button></div>
-          <button className="icon-button" aria-label="Observer health" title="Observers" onClick={() => { setLegendOpen(false); setHelpOpen(false); setObserversOpen(true); }}><RadioTower size={18} /></button>
+          <button className="icon-button" data-tour="observer-control" aria-label="Observer health" title="Observers" onClick={() => { setLegendOpen(false); setHelpOpen(false); setObserversOpen(true); }}><RadioTower size={18} /></button>
           <button className="icon-button" aria-label="Help" onClick={() => { setLegendOpen(false); setHelpOpen(true); }}><CircleHelp size={18} /></button>
           <button className={`icon-button ${legendOpen ? "active" : ""}`} aria-label="Map legend" title="Map legend" onClick={() => setLegendOpen((open) => !open)}><List size={18} /></button>
         </div>
@@ -1746,7 +1746,7 @@ export default function Home() {
 
         {observersOpen && <ObserverCenter onClose={() => setObserversOpen(false)} />}
         {helpOpen && <HelpCenter onClose={() => setHelpOpen(false)} onStartTour={() => { setHelpOpen(false); setTourOpen(true); }} legend={<LegendContents />} />}
-        {tourOpen && <GuidedTour onShowNode={showTourNodeEvidence} onShowLayers={() => { setPanelOpen(true); if (layersPanel.current) layersPanel.current.open = true; if (provenancePanel.current) provenancePanel.current.open = false; }} onClose={() => { setTourOpen(false); setDetailOpen(false); setSelectedActivity(null); if (layersPanel.current) layersPanel.current.open = false; }} />}
+        {tourOpen && <GuidedTour onShowNode={showTourNodeEvidence} onShowObservers={setObserversOpen} onShowLayers={() => { setPanelOpen(true); if (layersPanel.current) layersPanel.current.open = true; if (provenancePanel.current) provenancePanel.current.open = false; }} onClose={() => { setTourOpen(false); setObserversOpen(false); setDetailOpen(false); setSelectedActivity(null); if (layersPanel.current) layersPanel.current.open = false; }} />}
 
         <div className="map-caption">
           <span className="coordinates">37.0930° N&nbsp;&nbsp; 94.5334° W</span>

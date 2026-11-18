@@ -135,7 +135,7 @@ export function ObserverCenter({ onClose }: { onClose: () => void }) {
           </div>
         </aside>
 
-        <article className="observer-detail">
+        <article className="observer-detail" data-tour="observer-detail">
           {selected ? <>
             <div className="observer-detail-title">
               <span className={`observer-center-icon ${selected.status}`}><Antenna size={20} /></span>
