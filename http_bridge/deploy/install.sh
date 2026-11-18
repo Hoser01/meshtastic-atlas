@@ -71,7 +71,8 @@ listen_port=$(sed -n 's/^MESHTASTIC_HTTP_BRIDGE_LISTEN_PORT=//p' "$CONFIG" | tai
 
 install -m 0644 "$SCRIPT_DIR/meshtastic-http-bridge.service" /etc/systemd/system/meshtastic-http-bridge.service
 systemctl daemon-reload
-systemctl enable --now meshtastic-http-bridge.service
+systemctl enable meshtastic-http-bridge.service
+systemctl restart meshtastic-http-bridge.service
 
 for _ in {1..20}; do
   if curl -fsS --max-time 2 "http://127.0.0.1:$listen_port/healthz" >/dev/null; then

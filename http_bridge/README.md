@@ -31,8 +31,8 @@ collector. The default upstream is the local MUX at `127.0.0.1:4405`, and the
 default LAN-facing HTTP endpoint is port `4404`.
 
 ```bash
-tar -xzf meshtastic-http-bridge-deploy-0.1.1.tar.gz
-cd meshtastic-http-bridge-deploy-0.1.1
+tar -xzf meshtastic-http-bridge-deploy-0.1.2.tar.gz
+cd meshtastic-http-bridge-deploy-0.1.2
 ./install.sh
 ```
 
