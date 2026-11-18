@@ -18,6 +18,7 @@ import {
   Play,
   Plus,
   Radio,
+  RadioTower,
   Search,
   Signal,
   SlidersHorizontal,
@@ -35,6 +36,7 @@ import {
 } from "maplibre-gl";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { GuidedTour, HelpCenter } from "../components/atlas-help";
+import { ObserverCenter } from "../components/observer-center";
 
 type Provenance = "RF OBSERVED" | "REMOTE GATEWAY RF" | "MQTT NETWORK" | "LOCAL TX" | "UNKNOWN";
 type ApiProvenance = "RF_OBSERVED" | "REMOTE_GATEWAY_RF" | "MQTT_NETWORK" | "LOCAL_TX" | "UNKNOWN";
@@ -436,6 +438,7 @@ export default function Home() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(true);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [observersOpen, setObserversOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
   const [uiScale, setUiScale] = useState(1.05);
@@ -1654,6 +1657,7 @@ export default function Home() {
         </div>
         <div className="top-actions">
           <div className="text-scale-control" aria-label="Interface text size"><button onClick={() => adjustUiScale(-0.05)} disabled={uiScale <= 0.9} aria-label="Decrease interface size"><Minus size={13} /></button><span>{Math.round(uiScale * 100)}%</span><button onClick={() => adjustUiScale(0.05)} disabled={uiScale >= 1.4} aria-label="Increase interface size"><Plus size={13} /></button></div>
+          <button className="icon-button" aria-label="Observer health" title="Observers" onClick={() => { setLegendOpen(false); setHelpOpen(false); setObserversOpen(true); }}><RadioTower size={18} /></button>
           <button className="icon-button" aria-label="Help" onClick={() => { setLegendOpen(false); setHelpOpen(true); }}><CircleHelp size={18} /></button>
           <button className={`icon-button ${legendOpen ? "active" : ""}`} aria-label="Map legend" title="Map legend" onClick={() => setLegendOpen((open) => !open)}><List size={18} /></button>
         </div>
@@ -1740,6 +1744,7 @@ export default function Home() {
           <button onClick={() => map.current?.zoomOut({ duration: 300 })} title="Zoom out" data-tooltip="Zoom out" aria-label="Zoom out"><Minus size={17} /></button>
         </div>
 
+        {observersOpen && <ObserverCenter onClose={() => setObserversOpen(false)} />}
         {helpOpen && <HelpCenter onClose={() => setHelpOpen(false)} onStartTour={() => { setHelpOpen(false); setTourOpen(true); }} legend={<LegendContents />} />}
         {tourOpen && <GuidedTour onShowNode={showTourNodeEvidence} onShowLayers={() => { setPanelOpen(true); if (layersPanel.current) layersPanel.current.open = true; if (provenancePanel.current) provenancePanel.current.open = false; }} onClose={() => { setTourOpen(false); setDetailOpen(false); setSelectedActivity(null); if (layersPanel.current) layersPanel.current.open = false; }} />}
 

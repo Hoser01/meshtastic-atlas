@@ -1,15 +1,16 @@
 "use client";
 
-import { Activity, CircleHelp, Crosshair, Layers3, List, Search, SlidersHorizontal, X } from "lucide-react";
+import { Activity, CircleHelp, Crosshair, Layers3, List, RadioTower, Search, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-type HelpSection = "start" | "map" | "how" | "trust" | "fix";
+type HelpSection = "start" | "map" | "how" | "trust" | "observers" | "fix";
 
 const sections: Array<{ id: HelpSection; label: string }> = [
   { id: "start", label: "START HERE" },
   { id: "map", label: "MAP GUIDE" },
   { id: "how", label: "HOW DO I?" },
   { id: "trust", label: "DATA & TRUST" },
+  { id: "observers", label: "OBSERVERS" },
   { id: "fix", label: "TROUBLESHOOT" },
 ];
 
@@ -89,6 +90,23 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
           <div className="help-copy"><p><b>Measured</b> means collector evidence such as RSSI and SNR from a direct reception. <b>Inferred reachability</b> uses reported hops to show that a positioned node reached a collector, but does not invent the relay route. <b>Predicted RF coverage</b> starts with nightly terrain models from collectors and a capped set of stable, geographically distributed RF-active mesh anchors. Secondary anchors use shorter range, lower antenna height, and additional loss. A deeper RF history calibrates the result; only dense multihop evidence corroborated by multiple observers may add a small one-cell marginal footprint. Activity alone never creates coverage. Up to fifteen yellow stars identify separated, uncovered planning areas selected from corroborated RF demand, nearby modeled coverage, and local 3DEP elevation; five slots are reserved for closer southwest Missouri infill.</p><Plain>Measured is what a radio heard. Inferred is what packets repeatedly prove about reaching the mesh. Predicted uses collectors and trustworthy fixed mesh nodes, then cautiously fills small gaps where repeated RF history supports it. A yellow star says “this general area may be worth surveying for another node,” not “install at this exact spot.” It is still an estimate—not a promise that a radio will work there.</Plain></div>
           <div className="help-caution"><b>ATLAS DOES NOT CLAIM</b><p>A sender and receiver prove every relay between them; MQTT proves local RF reception; NeighborInfo is a collector measurement; or a heatmap is a precise signal boundary.</p></div>
         </>}
+        {section === "observers" && <>
+          <div className="help-hero"><span><b>NETWORK OPERATIONS</b><h3>Is every observer healthy?</h3><p>Open the radio-tower icon in the title bar for live collector, MUX, delivery, and RF status.</p></span><RadioTower size={28} /></div>
+          <h3>OBSERVER STATES</h3>
+          <div className="trust-grid">
+            <article className="local"><b>ONLINE</b><p>The heartbeat is current, the MUX is connected, and no events are waiting for delivery.</p><Plain>The collector and its radio connection are working.</Plain></article>
+            <article className="remote"><b>DEGRADED</b><p>The heartbeat is current, but the MUX is disconnected or the delivery queue is not empty.</p><Plain>The collector called home, but one part needs attention.</Plain></article>
+            <article className="rf"><b>OFFLINE</b><p>No collector heartbeat has arrived for more than 180 seconds.</p><Plain>ATLAS has not heard from this observer recently.</Plain></article>
+            <article className="mqtt"><b>QUIET</b><p>The observer is online, but it has not contributed a unique direct-RF observation within the last hour.</p><Plain>It is connected; the radio simply has not reported recent RF traffic.</Plain></article>
+          </div>
+          <h3>WHAT THE NUMBERS MEAN</h3>
+          <div className="how-list">
+            <details open><summary>MUX frames and connection epoch</summary><p>MUX frames count data seen during the current collector connection. The connection epoch increases when the collector reconnects to the MUX. A frame count that remains frozen while local device telemetry is expected can indicate a stale radio connection.</p></details>
+            <details><summary>Delivery queue</summary><p>Events are retained locally when ATLAS cannot be reached. A temporary nonzero queue is expected during an outage; it should return to zero after connectivity recovers.</p></details>
+            <details><summary>Last RF observation</summary><p>The newest unique direct-radio reception credited to that observer. MQTT-only traffic does not refresh this value.</p></details>
+            <details><summary>Warnings</summary><p>Collector connection errors recorded during the last 24 hours. Old warnings can remain visible after the underlying problem has recovered.</p></details>
+          </div>
+        </>}
         {section === "fix" && <>
           <h3>QUICK FIXES</h3>
           <div className="how-list">
@@ -99,7 +117,7 @@ export function HelpCenter({ onClose, onStartTour, legend }: { onClose: () => vo
             <details><summary>A node shows the wrong place</summary><p>Check Position Age in Node Evidence. ATLAS retains the last valid position until the node reports a newer one. A reported 0,0 is rejected as incorrectly configured.</p></details>
             <details><summary>The mobile screen is crowded</summary><p>Close Node Evidence or Network View when finished. The timeline is intentionally hidden on small screens so it does not cover map controls.</p></details>
           </div>
-          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.45</p>
+          <p className="help-version">HELP CONTENT · ATLAS WEB 0.3.49</p>
         </>}
       </div>
     </section>
