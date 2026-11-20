@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from .diagnostics import TimedRLock
 
 MQTT_REPLAY_MAX_AGE_SECONDS = 10 * 60
 LOGGER = logging.getLogger(__name__)
@@ -238,7 +240,14 @@ class AtlasStore:
         self.connection = sqlite3.connect(path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(SCHEMA)
-        self.lock = threading.RLock()
+        self.lock = TimedRLock(
+            LOGGER,
+            slow_seconds=float(os.environ.get("ATLAS_SLOW_LOCK_WAIT_SECONDS", "0.1")),
+            interval_seconds=float(
+                os.environ.get("ATLAS_DIAGNOSTIC_LOG_INTERVAL_SECONDS", "60")
+            ),
+        )
+        self._mqtt_packet_count: tuple[float, int] | None = None
         self._ensure_node_metadata_columns()
         self._ensure_node_summary_columns()
         self._normalize_mqtt_provenance()
@@ -1050,9 +1059,16 @@ class AtlasStore:
                 "SELECT count(DISTINCT observer_id) FROM observations"
             ).fetchone()[0]
             result["rf_observations"] = result["observations"]
-            result["mqtt_packets"] = self.connection.execute(
-                "SELECT count(*) FROM events WHERE event_type='network_packet'"
-            ).fetchone()[0]
+            # The exact event-type scan dominates this endpoint on production data. It is a
+            # dashboard summary, so retain fresh table counts while briefly reusing this one
+            # expensive aggregate.
+            now = time.monotonic()
+            if self._mqtt_packet_count is None or now - self._mqtt_packet_count[0] >= 30:
+                count = self.connection.execute(
+                    "SELECT count(*) FROM events WHERE event_type='network_packet'"
+                ).fetchone()[0]
+                self._mqtt_packet_count = (now, count)
+            result["mqtt_packets"] = self._mqtt_packet_count[1]
             result["positioned_nodes"] = self.connection.execute(
                 "SELECT count(DISTINCT node_num) FROM positions"
             ).fetchone()[0]

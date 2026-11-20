@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import math
 import os
 import sqlite3
@@ -17,13 +18,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
+from .diagnostics import RateLimitedWarning
 from .live import LiveBroker
 from .store import AtlasStore, EventValidationError
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -86,7 +90,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.48", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.49", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -96,6 +100,32 @@ def create_app(
     )
     app.state.store = store
     app.state.broker = broker
+    request_warnings = RateLimitedWarning(
+        LOGGER,
+        float(os.environ.get("ATLAS_DIAGNOSTIC_LOG_INTERVAL_SECONDS", "60")),
+    )
+    slow_request_seconds = float(os.environ.get("ATLAS_SLOW_REQUEST_SECONDS", "1"))
+
+    @app.middleware("http")
+    async def log_slow_requests(request: Request, call_next: Any) -> Any:
+        started = time.monotonic()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            duration = time.monotonic() - started
+            if duration >= slow_request_seconds:
+                # Deliberately omit query strings, headers, bodies, and client addresses.
+                request_warnings.emit(
+                    f"{request.method}:{request.url.path}",
+                    "slow API request method=%s path=%s status_code=%d duration_seconds=%.3f",
+                    request.method,
+                    request.url.path,
+                    status_code,
+                    duration,
+                )
     response_cache: dict[str, tuple[float, Any]] = {}
     response_cache_refreshing: set[str] = set()
     response_cache_lock = threading.Lock()
