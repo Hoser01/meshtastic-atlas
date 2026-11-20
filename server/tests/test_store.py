@@ -428,3 +428,20 @@ def test_unknown_packet_metadata_does_not_conflict_with_decoded_value() -> None:
     )
     assert summary["portnum"] == "NODEINFO_APP"
     assert summary["conflicting_portnum"] is False
+
+
+def test_quality_warnings_materialize_packet_window_once(tmp_path, monkeypatch) -> None:
+    store = AtlasStore(tmp_path / "atlas.db")
+    calls = 0
+
+    def load(hours):
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setattr(store, "_quality_packet_events", load)
+    try:
+        assert store.list_quality_warnings() == []
+        assert calls == 1
+    finally:
+        store.close()

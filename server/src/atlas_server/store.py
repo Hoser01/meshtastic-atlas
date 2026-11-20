@@ -1723,11 +1723,19 @@ class AtlasStore:
         summary["observations"] = sorted(events, key=lambda event: event["observed_at"])
         return summary
 
-    def list_gateway_quality(self, hours: float = 24) -> list[dict[str, Any]]:
+    def list_gateway_quality(
+        self,
+        hours: float = 24,
+        packet_events: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         with self.lock:
             events = [
                 event
-                for event in self._quality_packet_events(hours)
+                for event in (
+                    packet_events
+                    if packet_events is not None
+                    else self._quality_packet_events(hours)
+                )
                 if event.get("transport_source") == "LZ_MQTT"
             ]
             metadata = {
@@ -1846,7 +1854,11 @@ class AtlasStore:
 
     def list_quality_warnings(self, limit: int = 200, hours: float = 24) -> list[dict[str, Any]]:
         warnings: list[dict[str, Any]] = []
-        for gateway in self.list_gateway_quality(hours):
+        # Gateway and packet warnings cover the same window. Materialize and decode it once;
+        # production previously paid this five-second cost twice for every request.
+        with self.lock:
+            raw_events = self._quality_packet_events(hours)
+        for gateway in self.list_gateway_quality(hours, packet_events=raw_events):
             for kind in gateway["warnings"]:
                 warnings.append(
                     {
@@ -1860,8 +1872,6 @@ class AtlasStore:
                         "observed_at": gateway["last_report"],
                     }
                 )
-        with self.lock:
-            raw_events = self._quality_packet_events(hours)
         grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
         for event in raw_events:
             grouped.setdefault((int(event["from_node"]), int(event["packet_id"])), []).append(event)

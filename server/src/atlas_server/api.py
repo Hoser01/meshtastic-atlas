@@ -90,7 +90,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.49", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.50", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -397,7 +397,11 @@ def create_app(
         limit: int = Query(200, ge=1, le=2000),
         hours: float = Query(24, gt=0, le=24 * 30),
     ) -> list[dict[str, Any]]:
-        return store.list_quality_warnings(limit, hours)
+        return cached_response(
+            f"quality-warnings:{limit}:{hours}",
+            60,
+            lambda: store.list_quality_warnings(limit, hours),
+        )
 
     @app.get("/api/v1/nodes/{node_num}")
     def node_summary(node_num: int) -> dict[str, Any]:
