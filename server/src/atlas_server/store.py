@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 MQTT_REPLAY_MAX_AGE_SECONDS = 10 * 60
+LOGGER = logging.getLogger(__name__)
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -231,6 +234,7 @@ def validate_event(event: dict[str, Any]) -> None:
 
 class AtlasStore:
     def __init__(self, path: Path | str) -> None:
+        self.database_path = path
         self.connection = sqlite3.connect(path, check_same_thread=False)
         self.connection.row_factory = sqlite3.Row
         self.connection.executescript(SCHEMA)
@@ -1308,29 +1312,47 @@ class AtlasStore:
 
     def list_reachability_evidence(self, limit: int = 20000) -> list[dict[str, Any]]:
         """Return RF observations with the sender position known at reception time."""
-        with self.lock:
-            return [
-                dict(row)
-                for row in self.connection.execute(
-                    """
-                SELECT o.event_id, o.observer_id, o.observer_node_num, o.observed_at,
-                       o.rx_rssi, o.rx_snr, o.hop_start, o.hop_limit,
-                       t.packet_id, t.from_node AS transmitter_node,
-                       p.latitude, p.longitude, p.observed_at AS position_observed_at
-                FROM observations o
-                JOIN transmissions t ON t.id=o.transmission_id
-                JOIN positions p ON p.event_id=(
-                    SELECT latest.event_id FROM positions latest
-                    WHERE latest.node_num=t.from_node AND latest.observed_at<=o.observed_at
-                    ORDER BY latest.observed_at DESC LIMIT 1
-                )
-                WHERE o.source='RF_OBSERVED'
-                  AND coalesce(json_extract(o.raw_event, '$.repeat_observation'), 0)=0
-                ORDER BY o.observed_at DESC LIMIT ?
-                """,
-                    (limit,),
-                )
-            ]
+        query = """
+            SELECT o.event_id, o.observer_id, o.observer_node_num, o.observed_at,
+                   o.rx_rssi, o.rx_snr, o.hop_start, o.hop_limit,
+                   t.packet_id, t.from_node AS transmitter_node,
+                   p.latitude, p.longitude, p.observed_at AS position_observed_at
+            FROM observations o
+            JOIN transmissions t ON t.id=o.transmission_id
+            JOIN positions p ON p.event_id=(
+                SELECT latest.event_id FROM positions latest
+                WHERE latest.node_num=t.from_node AND latest.observed_at<=o.observed_at
+                ORDER BY latest.observed_at DESC LIMIT 1
+            )
+            WHERE o.source='RF_OBSERVED'
+              AND coalesce(json_extract(o.raw_event, '$.repeat_observation'), 0)=0
+            ORDER BY o.observed_at DESC LIMIT ?
+        """
+        started = time.monotonic()
+        path = str(self.database_path)
+        independent = path != ":memory:" and not path.startswith("file:")
+        if independent:
+            uri = Path(path).resolve().as_uri() + "?mode=ro"
+            connection = sqlite3.connect(uri, uri=True, timeout=5)
+            try:
+                connection.row_factory = sqlite3.Row
+                rows = [dict(row) for row in connection.execute(query, (limit,))]
+            finally:
+                connection.close()
+        else:
+            # In-memory and caller-managed URI databases cannot be reopened safely.
+            with self.lock:
+                rows = [dict(row) for row in self.connection.execute(query, (limit,))]
+        elapsed = time.monotonic() - started
+        if elapsed >= 1:
+            LOGGER.warning(
+                "slow reachability evidence read duration_seconds=%.3f row_count=%d limit=%d independent_connection=%s",
+                elapsed,
+                len(rows),
+                limit,
+                independent,
+            )
+        return rows
 
     def list_neighbor_measurements(self, limit: int = 2000) -> list[dict[str, Any]]:
         with self.lock:
