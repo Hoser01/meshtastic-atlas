@@ -47,6 +47,13 @@ def test_health_keeps_table_counts_fresh_while_caching_expensive_summary(tmp_pat
     expensive=[sql for sql in statements if "event_type='network_packet'" in sql]
     assert len(expensive)==1
 
+def test_network_packet_summary_uses_partial_covering_index(tmp_path):
+    app=create_app(tmp_path/'atlas.db')
+    plan=app.state.store.connection.execute(
+        "EXPLAIN QUERY PLAN SELECT count(*) FROM events WHERE event_type='network_packet'"
+    ).fetchall()
+    assert any('events_network_packet_idx' in row['detail'] for row in plan)
+
 def test_slow_request_diagnostic_omits_query_and_is_rate_limited(tmp_path, caplog, monkeypatch):
     monkeypatch.setenv('ATLAS_SLOW_REQUEST_SECONDS','0')
     monkeypatch.setenv('ATLAS_DIAGNOSTIC_LOG_INTERVAL_SECONDS','60')

@@ -74,6 +74,8 @@ CREATE INDEX IF NOT EXISTS events_to_time_idx
 ON events(json_extract(raw_event, '$.to_node'), observed_at DESC);
 CREATE INDEX IF NOT EXISTS events_packet_idx
 ON events(json_extract(raw_event, '$.from_node'), json_extract(raw_event, '$.packet_id'));
+CREATE INDEX IF NOT EXISTS events_network_packet_idx
+ON events(event_type) WHERE event_type='network_packet';
 
 CREATE TABLE IF NOT EXISTS node_identity_snapshots (
     observer_id TEXT NOT NULL,
