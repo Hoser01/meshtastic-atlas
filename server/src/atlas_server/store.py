@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,8 @@ CREATE TABLE IF NOT EXISTS transmissions (
     last_seen TEXT NOT NULL,
     UNIQUE(packet_id, from_node, to_node)
 );
+CREATE INDEX IF NOT EXISTS transmissions_last_seen_idx
+ON transmissions(last_seen DESC);
 
 CREATE TABLE IF NOT EXISTS observations (
     event_id TEXT PRIMARY KEY,
@@ -76,6 +79,10 @@ CREATE INDEX IF NOT EXISTS events_packet_idx
 ON events(json_extract(raw_event, '$.from_node'), json_extract(raw_event, '$.packet_id'));
 CREATE INDEX IF NOT EXISTS events_network_packet_idx
 ON events(event_type) WHERE event_type='network_packet';
+CREATE INDEX IF NOT EXISTS events_heartbeat_observer_time_idx
+ON events(observer_id, observed_at DESC) WHERE event_type='collector_heartbeat';
+CREATE INDEX IF NOT EXISTS events_connection_error_observer_time_idx
+ON events(observer_id, observed_at DESC) WHERE event_type='observer_connection_error';
 
 CREATE TABLE IF NOT EXISTS node_identity_snapshots (
     observer_id TEXT NOT NULL,
@@ -255,6 +262,24 @@ class AtlasStore:
         self._normalize_mqtt_provenance()
         self._backfill_coverage_evidence()
         self._backfill_node_summaries()
+
+    @contextmanager
+    def read_connection(self):
+        """Use an independent WAL reader so dashboard work never owns the writer lock."""
+        path = str(self.database_path)
+        independent = path != ":memory:" and not path.startswith("file:")
+        if independent:
+            uri = Path(path).resolve().as_uri() + "?mode=ro"
+            connection = sqlite3.connect(uri, uri=True, timeout=0.25)
+            try:
+                connection.row_factory = sqlite3.Row
+                yield connection
+            finally:
+                connection.close()
+        else:
+            # In-memory and caller-managed URI databases cannot be reopened safely.
+            with self.lock:
+                yield self.connection
 
     def _ensure_node_metadata_columns(self) -> None:
         existing = {
@@ -964,10 +989,10 @@ class AtlasStore:
         )
 
     def list_telemetry(self, limit: int = 500, node_num: int | None = None) -> list[dict[str, Any]]:
-        with self.lock:
+        with self.read_connection() as connection:
             where = " WHERE node_num=?" if node_num is not None else ""
             params: tuple[Any, ...] = (node_num, limit) if node_num is not None else (limit,)
-            rows = self.connection.execute(
+            rows = connection.execute(
                 f"SELECT * FROM telemetry{where} ORDER BY observed_at DESC LIMIT ?", params
             )
             result = [dict(row) for row in rows]
@@ -976,8 +1001,8 @@ class AtlasStore:
         return result
 
     def latest_telemetry_by_node(self) -> dict[int, dict[str, Any]]:
-        with self.lock:
-            rows = self.connection.execute(
+        with self.read_connection() as connection:
+            rows = connection.execute(
                 """
                 SELECT t.* FROM telemetry t
                 WHERE t.event_id=(
@@ -1078,8 +1103,8 @@ class AtlasStore:
 
     def list_activity(self, limit: int = 100) -> list[dict[str, Any]]:
         """Return recent normalized events, including RF observations, newest first."""
-        with self.lock:
-            rows = self.connection.execute(
+        with self.read_connection() as connection:
+            rows = connection.execute(
                 """
                 SELECT observed_at, raw_event FROM (
                     SELECT observed_at, raw_event FROM events
@@ -1100,8 +1125,8 @@ class AtlasStore:
         minute_start = end.replace(second=0, microsecond=0) - timedelta(minutes=minutes - 1)
         start = minute_start
         cutoff = start.isoformat().replace("+00:00", "Z")
-        with self.lock:
-            rows = self.connection.execute(
+        with self.read_connection() as connection:
+            rows = connection.execute(
                 """
                 SELECT minute, source, count(*) AS event_count FROM (
                     SELECT strftime('%Y-%m-%dT%H:%M:00Z', observed_at) AS minute,
@@ -1153,19 +1178,23 @@ class AtlasStore:
     def list_transmissions(
         self, limit: int = 100, before: str | None = None
     ) -> list[dict[str, Any]]:
-        with self.lock:
-            query = """
-                SELECT t.*, count(o.event_id) AS observation_count,
+        with self.read_connection() as connection:
+            recent_where = " WHERE last_seen < ?" if before else ""
+            query = f"""
+                WITH recent AS (
+                    SELECT * FROM transmissions{recent_where}
+                    ORDER BY last_seen DESC LIMIT ?
+                )
+                SELECT r.*, count(o.event_id) AS observation_count,
                        count(DISTINCT o.observer_id) AS observer_count
-                FROM transmissions t JOIN observations o ON o.transmission_id=t.id
+                FROM recent r LEFT JOIN observations o ON o.transmission_id=r.id
+                GROUP BY r.id ORDER BY r.last_seen DESC
             """
             params: list[Any] = []
             if before:
-                query += " WHERE t.last_seen < ?"
                 params.append(before)
-            query += " GROUP BY t.id ORDER BY t.last_seen DESC LIMIT ?"
             params.append(limit)
-            return [dict(row) for row in self.connection.execute(query, params)]
+            return [dict(row) for row in connection.execute(query, params)]
 
     def get_transmission(self, transmission_id: int) -> dict[str, Any] | None:
         with self.lock:
@@ -1191,7 +1220,7 @@ class AtlasStore:
     def list_observations(
         self, limit: int = 100, observer_id: str | None = None, before: str | None = None
     ) -> list[dict[str, Any]]:
-        with self.lock:
+        with self.read_connection() as connection:
             conditions: list[str] = []
             params: list[Any] = []
             if observer_id:
@@ -1204,7 +1233,7 @@ class AtlasStore:
             params.append(limit)
             return [
                 dict(row)
-                for row in self.connection.execute(
+                for row in connection.execute(
                     f"""
                 SELECT o.event_id, o.transmission_id, o.observer_id, o.observer_node_num,
                        o.observed_at, o.rx_rssi, o.rx_snr, o.hop_start, o.hop_limit,
@@ -1217,10 +1246,10 @@ class AtlasStore:
             ]
 
     def list_observers(self) -> list[dict[str, Any]]:
-        with self.lock:
+        with self.read_connection() as connection:
             return [
                 dict(row)
-                for row in self.connection.execute(
+                for row in connection.execute(
                     """
                 SELECT r.*, m.node_id, m.long_name, m.short_name, m.hardware_model, m.role
                        ,p.latitude, p.longitude, p.observed_at AS position_observed_at
@@ -1250,8 +1279,8 @@ class AtlasStore:
 
     def list_observer_health(self) -> list[dict[str, Any]]:
         """Return the latest collector heartbeat and RF activity for each observer."""
-        with self.lock:
-            rows = self.connection.execute(
+        with self.read_connection() as connection:
+            rows = connection.execute(
                 """
                 SELECT e.observer_id, e.observed_at AS last_heartbeat,
                        json_extract(e.raw_event, '$.observer_node_num') AS observer_node_num,
@@ -1285,7 +1314,7 @@ class AtlasStore:
     def list_positions(
         self, limit: int = 500, node_num: int | None = None, before: str | None = None
     ) -> list[dict[str, Any]]:
-        with self.lock:
+        with self.read_connection() as connection:
             conditions: list[str] = []
             params: list[Any] = []
             if node_num is not None:
@@ -1298,7 +1327,7 @@ class AtlasStore:
             params.append(limit)
             return [
                 dict(row)
-                for row in self.connection.execute(
+                for row in connection.execute(
                     f"SELECT * FROM positions{where} ORDER BY observed_at DESC LIMIT ?",
                     params,
                 )
@@ -1397,10 +1426,10 @@ class AtlasStore:
 
     def list_nodes(self, limit: int = 500) -> list[dict[str, Any]]:
         """Return the latest truthful position for each node."""
-        with self.lock:
+        with self.read_connection() as connection:
             return [
                 dict(row)
-                for row in self.connection.execute(
+                for row in connection.execute(
                     """
                 SELECT p.*, m.long_name, m.short_name, m.hardware_model, m.role,
                        CASE WHEN p.source='RF_OBSERVED' AND p.observer_id LIKE 'MQTT:%'
@@ -1419,10 +1448,10 @@ class AtlasStore:
 
     def list_node_summaries(self, limit: int = 5000) -> list[dict[str, Any]]:
         """Return one row per known node, ordered by its latest accepted evidence."""
-        with self.lock:
+        with self.read_connection() as connection:
             return [
                 dict(row)
-                for row in self.connection.execute(
+                for row in connection.execute(
                     """
                 SELECT s.*, m.node_id, m.long_name, m.short_name, m.hardware_model, m.role,
                        m.firmware_version, m.device_state_version, m.has_wifi,
@@ -1536,8 +1565,8 @@ class AtlasStore:
             if hours is not None
             else "0000-01-01T00:00:00Z"
         )
-        with self.lock:
-            packet_rows = self.connection.execute(
+        with self.read_connection() as connection:
+            packet_rows = connection.execute(
                 """
                 SELECT json_extract(raw_event, '$.from_node') AS sender,
                        json_extract(raw_event, '$.packet_id') AS packet_id,
@@ -1566,7 +1595,7 @@ class AtlasStore:
                 """,
                 (day_cutoff, day_cutoff),
             ).fetchall()
-            connection_errors = self.connection.execute(
+            connection_errors = connection.execute(
                 """SELECT count(*) FROM events
                    WHERE observed_at>=? AND event_type='observer_connection_error'""",
                 (day_cutoff,),
@@ -1618,7 +1647,14 @@ class AtlasStore:
             "deduplication_rule": "sender+packet_id; RF_OBSERVED wins provenance",
         }
 
-    def _quality_packet_events(self, hours: float | None = None) -> list[dict[str, Any]]:
+    def _quality_packet_events(
+        self,
+        hours: float | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[dict[str, Any]]:
+        if connection is None:
+            with self.read_connection() as reader:
+                return self._quality_packet_events(hours, reader)
         conditions = ""
         params: list[Any] = []
         if hours is not None:
@@ -1628,7 +1664,7 @@ class AtlasStore:
             )
             conditions = " AND observed_at>=?"
             params.append(cutoff_text)
-        rows = self.connection.execute(
+        rows = connection.execute(
             f"""
             SELECT raw_event FROM observations
             WHERE json_extract(raw_event, '$.packet_id') IS NOT NULL
@@ -1692,8 +1728,7 @@ class AtlasStore:
         }
 
     def list_logical_packets(self, limit: int = 100, hours: float = 24) -> list[dict[str, Any]]:
-        with self.lock:
-            events = self._quality_packet_events(hours)
+        events = self._quality_packet_events(hours)
         grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
         for event in events:
             grouped.setdefault((int(event["from_node"]), int(event["packet_id"])), []).append(event)
@@ -1728,23 +1763,23 @@ class AtlasStore:
         hours: float = 24,
         packet_events: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        with self.lock:
+        with self.read_connection() as connection:
             events = [
                 event
                 for event in (
                     packet_events
                     if packet_events is not None
-                    else self._quality_packet_events(hours)
+                    else self._quality_packet_events(hours, connection)
                 )
                 if event.get("transport_source") == "LZ_MQTT"
             ]
             metadata = {
                 int(row["node_num"]): dict(row)
-                for row in self.connection.execute("SELECT * FROM node_metadata")
+                for row in connection.execute("SELECT * FROM node_metadata")
             }
             positions = {
                 int(row["node_num"]): dict(row)
-                for row in self.connection.execute(
+                for row in connection.execute(
                     """
                     SELECT p.* FROM positions p JOIN (
                         SELECT node_num, max(observed_at) latest FROM positions GROUP BY node_num
@@ -1836,8 +1871,7 @@ class AtlasStore:
         )
         if gateway is None:
             return None
-        with self.lock:
-            all_events = self._quality_packet_events(hours)
+        all_events = self._quality_packet_events(hours)
         keys = {
             (int(event["from_node"]), int(event["packet_id"]))
             for event in all_events
@@ -1856,8 +1890,7 @@ class AtlasStore:
         warnings: list[dict[str, Any]] = []
         # Gateway and packet warnings cover the same window. Materialize and decode it once;
         # production previously paid this five-second cost twice for every request.
-        with self.lock:
-            raw_events = self._quality_packet_events(hours)
+        raw_events = self._quality_packet_events(hours)
         for gateway in self.list_gateway_quality(hours, packet_events=raw_events):
             for kind in gateway["warnings"]:
                 warnings.append(

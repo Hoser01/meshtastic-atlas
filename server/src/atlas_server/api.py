@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
@@ -90,7 +91,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.50", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.51", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -658,7 +659,9 @@ def create_app(
         if event.get("simulated"):
             raise HTTPException(422, "simulated events cannot be persisted")
         try:
-            accepted = store.ingest(event)
+            # SQLite work is serialized by the store writer lock, but must not block the
+            # asyncio loop while a burst of collectors waits its turn.
+            accepted = await run_in_threadpool(store.ingest, event)
         except EventValidationError as exc:
             raise HTTPException(422, str(exc)) from exc
         if accepted:
