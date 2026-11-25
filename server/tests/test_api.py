@@ -1,5 +1,8 @@
 import asyncio
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from atlas_server.api import create_app
@@ -407,3 +410,28 @@ def test_live_broker_fanout() -> None:
             assert await second.get() == event
 
     asyncio.run(exercise())
+
+
+def test_cold_quality_cache_uses_one_loader_for_concurrent_requests(tmp_path, monkeypatch):
+    app = create_app(tmp_path / "atlas.db")
+    calls = 0
+    calls_lock = threading.Lock()
+    barrier = threading.Barrier(6)
+
+    def load(hours):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.1)
+        return []
+
+    monkeypatch.setattr(app.state.store, "list_gateway_quality", load)
+    with TestClient(app) as client:
+        def request():
+            barrier.wait()
+            return client.get("/api/v1/quality/gateways").status_code
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            statuses = list(pool.map(lambda _: request(), range(6)))
+    assert statuses == [200] * 6
+    assert calls == 1

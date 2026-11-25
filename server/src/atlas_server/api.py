@@ -130,6 +130,7 @@ def create_app(
     response_cache: dict[str, tuple[float, Any]] = {}
     response_cache_refreshing: set[str] = set()
     response_cache_lock = threading.Lock()
+    response_cache_load_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
 
     def cached_response(key: str, ttl: float, loader: Any) -> Any:
         """Return stale data immediately while one background thread refreshes it."""
@@ -153,10 +154,17 @@ def create_app(
 
                     threading.Thread(target=refresh, daemon=True, name=f"cache-{key}").start()
                 return cached[1]
-        value = loader()
-        with response_cache_lock:
-            response_cache[key] = (time.monotonic(), value)
-        return value
+        # One cold loader per key prevents identical expensive dashboard requests from
+        # stampeding SQLite before the first result has populated the cache.
+        with response_cache_load_locks[key]:
+            with response_cache_lock:
+                cached = response_cache.get(key)
+                if cached and time.monotonic() - cached[0] < ttl:
+                    return cached[1]
+            value = loader()
+            with response_cache_lock:
+                response_cache[key] = (time.monotonic(), value)
+            return value
 
     def cached_node_summaries(limit: int) -> list[dict[str, Any]]:
         rows = cached_response("node-summaries", 60, lambda: store.list_node_summaries(10000))
@@ -367,7 +375,9 @@ def create_app(
 
     @app.get("/api/v1/quality/gateways")
     def quality_gateways(hours: float = Query(24, gt=0, le=24 * 30)) -> list[dict[str, Any]]:
-        return store.list_gateway_quality(hours)
+        return cached_response(
+            f"quality-gateways:{hours}", 60, lambda: store.list_gateway_quality(hours)
+        )
 
     @app.get("/api/v1/quality/gateways/{node_num}")
     def quality_gateway(
