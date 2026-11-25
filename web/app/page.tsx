@@ -37,6 +37,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { GuidedTour, HelpCenter } from "../components/atlas-help";
 import { ObserverCenter } from "../components/observer-center";
+import { traceroutePaths } from "../lib/traceroute-paths";
 
 type Provenance = "RF OBSERVED" | "REMOTE GATEWAY RF" | "MQTT NETWORK" | "LOCAL TX" | "UNKNOWN";
 type ApiProvenance = "RF_OBSERVED" | "REMOTE_GATEWAY_RF" | "MQTT_NETWORK" | "LOCAL_TX" | "UNKNOWN";
@@ -360,7 +361,8 @@ function LegendContents() {
       <span><i className="legend-line dashed rf" /><b>Dashed orange</b><small>Logical RF transmitter-to-observer relationship; relay hops are not reconstructed.</small></span>
       <span><i className="legend-line dashed mqtt" /><b>Dashed purple</b><small>MQTT-carried or MQTT-addressed activity.</small></span>
       <span><i className="legend-line dashed green" /><b>Dashed green</b><small>Text or locally originated addressed traffic between known endpoints.</small></span>
-      <span><i className="legend-line trace" /><b>Thin blue</b><small>Explicit traceroute segments supplied by the packet.</small></span>
+      <span><i className="legend-line trace" /><b>Solid blue</b><small>Completed traceroute segments explicitly supplied by a returned RouteDiscovery response.</small></span>
+      <span><i className="legend-line dashed trace-partial" /><b>Dotted blue</b><small>Partial traceroute request observed while flooding. It stops at the last evidenced relay and does not claim that copy reached its destination.</small></span>
       <span><i className="legend-packets" /><b>Moving dots</b><small>Live packet bursts that expire after approximately 15 seconds.</small></span>
       <span><i className="legend-swatch green" /><b>Green endpoint</b><small>Follow Packet sender.</small></span>
       <span><i className="legend-swatch destination" /><b>Blue endpoint</b><small>Known, positioned destination.</small></span>
@@ -397,7 +399,7 @@ export default function Home() {
   const healthRefreshAt = useRef(0);
   const displayedNodesRef = useRef<MeshNode[]>([]);
   const nodeSummariesRef = useRef<NodeSummary[]>([]);
-  const animationLinks = useRef<Array<{ from: [number, number]; to: [number, number]; kind: "reception" | "addressed" | "mqtt" | "rf_text" | "traceroute"; pathStyle: "logical" | "confirmed" | "trace"; observedAt: string }>>([]);
+  const animationLinks = useRef<Array<{ from: [number, number]; to: [number, number]; kind: "reception" | "addressed" | "mqtt" | "rf_text" | "traceroute"; pathStyle: "logical" | "confirmed" | "trace" | "trace_partial"; observedAt: string }>>([]);
   const [selected, setSelected] = useState<MeshNode | null>(null);
   const [selectedNode, setSelectedNode] = useState<NodeSummary | null>(null);
   const [selectedNodeActivity, setSelectedNodeActivity] = useState<ActivityEvent[]>([]);
@@ -932,7 +934,7 @@ export default function Home() {
     for (const layer of ["node-clusters", "node-cluster-count", "node-points-activity-glow", "node-points-wide", "node-points-hit"]) {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showNodes));
     }
-    for (const layer of ["recent-rf-links-glow", "recent-rf-links", "recent-rf-links-confirmed", "recent-rf-links-trace", "rf-particles-glow", "rf-particles"]) {
+    for (const layer of ["recent-rf-links-glow", "recent-rf-links", "recent-rf-links-confirmed", "recent-rf-links-trace", "recent-rf-links-trace-partial", "rf-particles-glow", "rf-particles"]) {
       if (map.current.getLayer(layer)) map.current.setLayoutProperty(layer, "visibility", visibility(showLinks));
     }
   }, [mapReady, showCoverage, showHeatmap, showLinks, showNodes, showPrediction]);
@@ -1108,6 +1110,11 @@ export default function Home() {
         id: "recent-rf-links-trace", type: "line", source: "recent-rf-links",
         filter: ["==", ["get", "path_style"], "trace"],
         paint: { "line-color": "#54e4fb", "line-width": 1.4, "line-opacity": 0.78 },
+      });
+      instance.addLayer({
+        id: "recent-rf-links-trace-partial", type: "line", source: "recent-rf-links",
+        filter: ["==", ["get", "path_style"], "trace_partial"],
+        paint: { "line-color": "#54e4fb", "line-width": 1.1, "line-opacity": 0.52, "line-dasharray": [1, 2] },
       });
       instance.addLayer({
         id: "rf-particles-glow", type: "circle", source: "rf-particles",
@@ -1320,14 +1327,14 @@ export default function Home() {
       : byId.get(`!${(item.observer_node_num >>> 0).toString(16).padStart(8, "0")}`) ?? observerNodes[0];
     const features: Array<{ type: "Feature"; properties: { kind: string; path_style: string; observed_at: string }; geometry: { type: "LineString"; coordinates: number[][] } }> = [];
     const nodeFor = (nodeNum: number) => byId.get(`!${(nodeNum >>> 0).toString(16).padStart(8, "0")}`);
-    const addTraceSegments = (nodes: number[], observedAt: string) => {
+    const addTraceSegments = (nodes: number[], observedAt: string, pathStyle: "trace" | "trace_partial") => {
       for (let index = 0; index < nodes.length - 1; index += 1) {
         const start = nodeFor(nodes[index]);
         const end = nodeFor(nodes[index + 1]);
         if (!start || !end) continue;
         features.push({
           type: "Feature",
-          properties: { kind: "traceroute", path_style: "trace", observed_at: observedAt },
+          properties: { kind: "traceroute", path_style: pathStyle, observed_at: observedAt },
           geometry: { type: "LineString", coordinates: [[start.lng, start.lat], [end.lng, end.lat]] },
         });
       }
@@ -1348,10 +1355,9 @@ export default function Home() {
       const from = byId.get(fromId);
       const observer = observerFor(item);
       if (!observer) continue;
-      if (item.traceroute && item.to_node !== undefined) {
-        addTraceSegments([item.to_node, ...item.traceroute.route, item.from_node], item.observed_at);
-        if (item.traceroute.route_back.length) {
-          addTraceSegments([item.from_node, ...item.traceroute.route_back, item.to_node], item.observed_at);
+      if (item.traceroute) {
+        for (const path of traceroutePaths(item)) {
+          addTraceSegments(path.nodes, item.observed_at, path.complete ? "trace" : "trace_partial");
         }
       }
       if (item.source === "LOCAL_TX") {
@@ -1392,7 +1398,7 @@ export default function Home() {
       from: feature.geometry.coordinates[0] as [number, number],
       to: feature.geometry.coordinates[1] as [number, number],
       kind: feature.properties.kind as "reception" | "addressed" | "mqtt" | "rf_text" | "traceroute",
-      pathStyle: feature.properties.path_style as "logical" | "confirmed" | "trace",
+      pathStyle: feature.properties.path_style as "logical" | "confirmed" | "trace" | "trace_partial",
       observedAt: feature.properties.observed_at,
     }));
     setDrawablePathCount(features.length);

@@ -11,7 +11,16 @@ and rollback archives stay on the server and are not committed.
 
 ## Unreleased
 
-- No changes yet.
+### Map accuracy
+
+- Distinguished incomplete traceroute requests from completed RouteDiscovery
+  replies. MQTT gateways can report separate flooded copies of one request;
+  those partial paths now stop at their last evidenced relay instead of being
+  joined to the intended destination.
+- Added a dotted blue partial-trace style and clarified the map legend. Solid
+  blue is reserved for completed traceroute responses.
+- Added regression coverage using the duplicate-gateway route pattern that
+  exposed the issue.
 
 ## 0.3.52 — 2026-11-25
 
