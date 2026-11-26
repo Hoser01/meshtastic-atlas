@@ -6,6 +6,57 @@ from atlas_server.store import AtlasStore
 from test_store import observation
 
 
+def test_slow_node_activity_reader_does_not_hold_writer_lock(tmp_path, monkeypatch):
+    store = AtlasStore(tmp_path / "atlas.db")
+    first = observation("c" * 32, "A", "2026-09-18T13:00:00Z", -80)
+    assert store.ingest(first)
+
+    original_read_connection = store.read_connection
+    read_started = threading.Event()
+    release_read = threading.Event()
+
+    class SlowCursor:
+        def __init__(self, cursor):
+            self.cursor = cursor
+
+        def fetchall(self):
+            read_started.set()
+            assert release_read.wait(2)
+            return self.cursor.fetchall()
+
+    class SlowConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, *args, **kwargs):
+            return SlowCursor(self.connection.execute(*args, **kwargs))
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def slow_read_connection():
+        with original_read_connection() as connection:
+            yield SlowConnection(connection)
+
+    monkeypatch.setattr(store, "read_connection", slow_read_connection)
+    result = []
+    reader = threading.Thread(target=lambda: result.extend(store.list_node_activity(100)))
+    reader.start()
+    try:
+        assert read_started.wait(2)
+        second = observation("d" * 32, "B", "2026-09-18T13:00:01Z", -79)
+        second["packet_id"] = 43
+        assert store.ingest(second)
+        release_read.set()
+        reader.join(2)
+        assert not reader.is_alive()
+        assert [row["event_id"] for row in result] == [first["event_id"]]
+    finally:
+        release_read.set()
+        reader.join(2)
+        store.close()
+
+
 def test_slow_transmission_reader_does_not_hold_writer_lock(tmp_path, monkeypatch):
     store = AtlasStore(tmp_path / "atlas.db")
     first = observation("a" * 32, "A", "2026-11-25T12:00:00Z", -80)

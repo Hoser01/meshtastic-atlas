@@ -11,6 +11,30 @@ and rollback archives stay on the server and are not committed.
 
 ## Unreleased
 
+- No changes yet.
+
+## 0.3.54 — 2026-11-26
+
+### Performance and reliability
+
+- Bounded node activity reads to the newest indexed sender and recipient
+  candidates before merging them, preserving ordering and filtering while
+  avoiding large temporary sorts.
+- Moved node detail and activity reads to independent read-only WAL connections
+  so concurrent dashboard requests cannot hold or wait on the ingestion lock.
+- Changed quality packet listing to identify the requested recent packet keys
+  first, then decode evidence only for those keys instead of the full window.
+- Added a time-ordered network-packet index for bounded quality windows.
+- Added a five-minute, stale-while-refresh serialized reachability cache. The
+  public cache is persisted beside the database so API restarts do not force a
+  350,000-row cold rebuild; responses advertise the freshness interval.
+- Added rate-limited database/materialization timing diagnostics that report
+  operation names, durations, and row counts without payloads or secrets.
+- Added regression tests for quality limits, persistent reachability caching,
+  and writer progress during a stalled node activity read.
+
+## 0.3.53 — 2026-11-25
+
 ### Map accuracy
 
 - Distinguished incomplete traceroute requests from completed RouteDiscovery

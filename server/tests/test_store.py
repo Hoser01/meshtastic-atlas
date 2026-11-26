@@ -373,6 +373,30 @@ def test_node_summaries_are_unique_ordered_and_include_received_activity(tmp_pat
         store.close()
 
 
+def test_quality_packet_limit_selects_recent_keys_before_materializing_evidence(tmp_path) -> None:
+    store = AtlasStore(tmp_path / "atlas.db")
+    try:
+        older_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+        newest_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+        older = observation("6" * 32, "A", older_at, -80)
+        older["packet_id"] = 61
+        newest = observation("7" * 32, "A", newest_at, -70)
+        newest["packet_id"] = 62
+        repeated = {**newest, "event_id": "8" * 32, "observer_id": "B"}
+        assert store.ingest(older)
+        assert store.ingest(newest)
+        assert store.ingest(repeated)
+
+        packets = store.list_logical_packets(limit=1, hours=24)
+        assert len(packets) == 1
+        assert packets[0]["packet_id"] == 62
+        assert packets[0]["observation_count"] == 2
+        assert packets[0]["gateway_count"] == 2
+        assert packets[0]["provenance"] == "RF_OBSERVED"
+    finally:
+        store.close()
+
+
 def test_repeat_repair_restores_unique_node_freshness_and_derivatives(tmp_path) -> None:
     store = AtlasStore(tmp_path / "atlas.db")
     try:

@@ -335,6 +335,36 @@ def test_measured_coverage_api_includes_distance_and_age(tmp_path, monkeypatch) 
         assert reachability["features"][0]["properties"]["evidence"] == "DIRECT"
 
 
+def test_reachability_serialized_cache_survives_api_restart(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(
+        "ATLAS_OBSERVER_CONFIG",
+        json.dumps({"LZG2": {"latitude": 30.20, "longitude": -93.75}}),
+    )
+    database = tmp_path / "atlas.db"
+    app = create_app(database, ingest_token="secret")
+    with TestClient(app) as client:
+        assert client.post(
+            "/api/v1/events",
+            json=observation(),
+            headers={"X-Atlas-Ingest-Token": "secret"},
+        ).status_code == 202
+        first = client.get("/api/v1/coverage/reachability-surface")
+        assert first.status_code == 200
+        assert first.headers["x-atlas-cache-freshness"] == "300s"
+        expected = first.json()
+
+    restarted = create_app(database)
+
+    def unexpected_read(limit):
+        raise AssertionError("fresh disk cache should avoid a database read")
+
+    monkeypatch.setattr(restarted.state.store, "list_reachability_evidence", unexpected_read)
+    with TestClient(restarted) as client:
+        cached = client.get("/api/v1/coverage/reachability-surface")
+        assert cached.status_code == 200
+        assert cached.json() == expected
+
+
 def test_remote_gateway_rf_is_distinct_from_direct_collector_rf(tmp_path) -> None:
     event = {
         **observation(),

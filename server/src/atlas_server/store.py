@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .diagnostics import TimedRLock
+from .diagnostics import RateLimitedWarning, TimedRLock
 
 MQTT_REPLAY_MAX_AGE_SECONDS = 10 * 60
 LOGGER = logging.getLogger(__name__)
@@ -61,7 +61,6 @@ CREATE INDEX IF NOT EXISTS observations_to_time_idx
 ON observations(json_extract(raw_event, '$.to_node'), observed_at DESC);
 CREATE INDEX IF NOT EXISTS observations_packet_idx
 ON observations(json_extract(raw_event, '$.from_node'), json_extract(raw_event, '$.packet_id'));
-
 CREATE TABLE IF NOT EXISTS events (
     event_id TEXT PRIMARY KEY,
     event_type TEXT NOT NULL,
@@ -79,6 +78,8 @@ CREATE INDEX IF NOT EXISTS events_packet_idx
 ON events(json_extract(raw_event, '$.from_node'), json_extract(raw_event, '$.packet_id'));
 CREATE INDEX IF NOT EXISTS events_network_packet_idx
 ON events(event_type) WHERE event_type='network_packet';
+CREATE INDEX IF NOT EXISTS events_network_packet_time_idx
+ON events(observed_at DESC) WHERE event_type='network_packet';
 CREATE INDEX IF NOT EXISTS events_heartbeat_observer_time_idx
 ON events(observer_id, observed_at DESC) WHERE event_type='collector_heartbeat';
 CREATE INDEX IF NOT EXISTS events_connection_error_observer_time_idx
@@ -256,6 +257,11 @@ class AtlasStore:
                 os.environ.get("ATLAS_DIAGNOSTIC_LOG_INTERVAL_SECONDS", "60")
             ),
         )
+        self.read_warnings = RateLimitedWarning(
+            LOGGER,
+            float(os.environ.get("ATLAS_DIAGNOSTIC_LOG_INTERVAL_SECONDS", "60")),
+        )
+        self.slow_read_seconds = float(os.environ.get("ATLAS_SLOW_READ_SECONDS", "0.5"))
         self._mqtt_packet_count: tuple[float, int] | None = None
         self._ensure_node_metadata_columns()
         self._ensure_node_summary_columns()
@@ -280,6 +286,26 @@ class AtlasStore:
             # In-memory and caller-managed URI databases cannot be reopened safely.
             with self.lock:
                 yield self.connection
+
+    def _log_read_timing(
+        self,
+        operation: str,
+        database_seconds: float,
+        materialization_seconds: float,
+        row_count: int,
+    ) -> None:
+        total = database_seconds + materialization_seconds
+        if total < self.slow_read_seconds:
+            return
+        self.read_warnings.emit(
+            f"store-read:{operation}",
+            "slow store read operation=%s database_seconds=%.3f materialization_seconds=%.3f row_count=%d total_seconds=%.3f",
+            operation,
+            database_seconds,
+            materialization_seconds,
+            row_count,
+            total,
+        )
 
     def _ensure_node_metadata_columns(self) -> None:
         existing = {
@@ -1383,22 +1409,22 @@ class AtlasStore:
             connection = sqlite3.connect(uri, uri=True, timeout=5)
             try:
                 connection.row_factory = sqlite3.Row
-                rows = [dict(row) for row in connection.execute(query, (limit,))]
+                raw_rows = connection.execute(query, (limit,)).fetchall()
             finally:
                 connection.close()
         else:
             # In-memory and caller-managed URI databases cannot be reopened safely.
             with self.lock:
-                rows = [dict(row) for row in self.connection.execute(query, (limit,))]
-        elapsed = time.monotonic() - started
-        if elapsed >= 1:
-            LOGGER.warning(
-                "slow reachability evidence read duration_seconds=%.3f row_count=%d limit=%d independent_connection=%s",
-                elapsed,
-                len(rows),
-                limit,
-                independent,
-            )
+                raw_rows = self.connection.execute(query, (limit,)).fetchall()
+        queried = time.monotonic()
+        rows = [dict(row) for row in raw_rows]
+        materialized = time.monotonic()
+        self._log_read_timing(
+            "reachability_evidence",
+            queried - started,
+            materialized - queried,
+            len(rows),
+        )
         return rows
 
     def list_neighbor_measurements(self, limit: int = 2000) -> list[dict[str, Any]]:
@@ -1479,8 +1505,8 @@ class AtlasStore:
             ]
 
     def get_node_summary(self, node_num: int) -> dict[str, Any] | None:
-        with self.lock:
-            row = self.connection.execute(
+        with self.read_connection() as connection:
+            row = connection.execute(
                 """
                 SELECT s.*, m.node_id, m.long_name, m.short_name, m.hardware_model, m.role,
                        m.firmware_version, m.device_state_version, m.has_wifi,
@@ -1511,8 +1537,9 @@ class AtlasStore:
         summary = self.get_node_summary(node_num)
         if summary is None:
             return None
-        with self.lock:
-            last_rf = self.connection.execute(
+        started = time.monotonic()
+        with self.read_connection() as connection:
+            last_rf = connection.execute(
                 """
                 SELECT max(observed_at) FROM observations
                 WHERE source='RF_OBSERVED'
@@ -1522,7 +1549,7 @@ class AtlasStore:
                 """,
                 (node_num, node_num),
             ).fetchone()[0]
-            heard_rows = self.connection.execute(
+            heard_rows = connection.execute(
                 """
                 SELECT o.observer_id, o.observer_node_num,
                        max(o.observed_at) AS last_observed_at,
@@ -1546,12 +1573,21 @@ class AtlasStore:
                 LIMIT 50
                 """,
                 (node_num, node_num),
-            )
+            ).fetchall()
+        queried = time.monotonic()
+        heard = [dict(row) for row in heard_rows]
+        materialized = time.monotonic()
+        self._log_read_timing(
+            "node_detail",
+            queried - started,
+            materialized - queried,
+            len(heard),
+        )
         return {
             **summary,
             "last_any_seen": summary["last_heard"],
             "last_rf_seen": last_rf,
-            "recently_heard_by": [dict(row) for row in heard_rows],
+            "recently_heard_by": heard,
         }
 
     def quality_metrics(self, hours: float | None = None) -> dict[str, Any]:
@@ -1728,13 +1764,78 @@ class AtlasStore:
         }
 
     def list_logical_packets(self, limit: int = 100, hours: float = 24) -> list[dict[str, Any]]:
-        events = self._quality_packet_events(hours)
+        cutoff = datetime.fromtimestamp(
+            datetime.now(timezone.utc).timestamp() - hours * 3600, timezone.utc
+        ).isoformat().replace("+00:00", "Z")
+        started = time.monotonic()
+        with self.read_connection() as connection:
+            keys = connection.execute(
+                """
+                WITH packet_events AS (
+                    SELECT json_extract(raw_event, '$.from_node') AS sender,
+                           json_extract(raw_event, '$.packet_id') AS packet_id,
+                           observed_at
+                    FROM observations
+                    WHERE observed_at>=?
+                      AND json_extract(raw_event, '$.packet_id') IS NOT NULL
+                      AND json_extract(raw_event, '$.from_node') IS NOT NULL
+                    UNION ALL
+                    SELECT json_extract(raw_event, '$.from_node'),
+                           json_extract(raw_event, '$.packet_id'), observed_at
+                    FROM events INDEXED BY events_network_packet_time_idx
+                    WHERE observed_at>=? AND event_type='network_packet'
+                      AND json_extract(raw_event, '$.packet_id') IS NOT NULL
+                      AND json_extract(raw_event, '$.from_node') IS NOT NULL
+                )
+                SELECT sender, packet_id, max(observed_at) AS last_observed_at
+                FROM packet_events
+                GROUP BY sender, packet_id
+                ORDER BY last_observed_at DESC
+                LIMIT ?
+                """,
+                (cutoff, cutoff, limit),
+            ).fetchall()
+            if not keys:
+                return []
+            connection.execute(
+                "CREATE TEMP TABLE atlas_quality_keys(sender INTEGER, packet_id INTEGER, PRIMARY KEY(sender, packet_id)) WITHOUT ROWID"
+            )
+            connection.executemany(
+                "INSERT INTO atlas_quality_keys(sender, packet_id) VALUES (?, ?)",
+                ((row["sender"], row["packet_id"]) for row in keys),
+            )
+            raw_rows = connection.execute(
+                """
+                SELECT o.raw_event FROM atlas_quality_keys k
+                JOIN observations o
+                  ON json_extract(o.raw_event, '$.from_node')=k.sender
+                 AND json_extract(o.raw_event, '$.packet_id')=k.packet_id
+                WHERE o.observed_at>=?
+                UNION ALL
+                SELECT e.raw_event FROM atlas_quality_keys k
+                JOIN events e
+                  ON json_extract(e.raw_event, '$.from_node')=k.sender
+                 AND json_extract(e.raw_event, '$.packet_id')=k.packet_id
+                WHERE e.observed_at>=? AND e.event_type='network_packet'
+                """,
+                (cutoff, cutoff),
+            ).fetchall()
+        queried = time.monotonic()
+        events = [json.loads(row["raw_event"]) for row in raw_rows]
         grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
         for event in events:
             grouped.setdefault((int(event["from_node"]), int(event["packet_id"])), []).append(event)
         summaries = [self._logical_packet_summary(group) for group in grouped.values()]
         summaries.sort(key=lambda item: item["last_observed_at"], reverse=True)
-        return summaries[:limit]
+        result = summaries[:limit]
+        materialized = time.monotonic()
+        self._log_read_timing(
+            "quality_packets",
+            queried - started,
+            materialized - queried,
+            len(raw_rows),
+        )
+        return result
 
     def get_logical_packet(self, sender: int, packet_id: int) -> dict[str, Any] | None:
         with self.lock:
@@ -1980,33 +2081,63 @@ class AtlasStore:
 
     def list_node_activity(self, node_num: int, limit: int = 250) -> list[dict[str, Any]]:
         """Return sent and received evidence for a node without duplicating storage."""
-        with self.lock:
-            rows = self.connection.execute(
+        started = time.monotonic()
+        with self.read_connection() as connection:
+            rows = connection.execute(
                 """
-                SELECT observed_at, raw_event FROM (
+                WITH observation_from AS (
                     SELECT observed_at, raw_event FROM observations
                     WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
-                      AND (json_extract(raw_event, '$.from_node')=?
-                       OR json_extract(raw_event, '$.to_node')=?)
-                    UNION ALL
+                      AND json_extract(raw_event, '$.from_node')=?
+                    ORDER BY observed_at DESC LIMIT ?
+                ), observation_to AS (
+                    SELECT observed_at, raw_event FROM observations
+                    WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
+                      AND json_extract(raw_event, '$.to_node')=?
+                      AND coalesce(json_extract(raw_event, '$.from_node'), -1)<>?
+                    ORDER BY observed_at DESC LIMIT ?
+                ), event_from AS (
                     SELECT observed_at, raw_event FROM events
                     WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
-                      AND (json_extract(raw_event, '$.from_node')=?
-                       OR json_extract(raw_event, '$.to_node')=?)
+                      AND json_extract(raw_event, '$.from_node')=?
+                    ORDER BY observed_at DESC LIMIT ?
+                ), event_to AS (
+                    SELECT observed_at, raw_event FROM events
+                    WHERE coalesce(json_extract(raw_event, '$.repeat_observation'), 0)=0
+                      AND json_extract(raw_event, '$.to_node')=?
+                      AND coalesce(json_extract(raw_event, '$.from_node'), -1)<>?
+                    ORDER BY observed_at DESC LIMIT ?
+                )
+                SELECT observed_at, raw_event FROM (
+                    SELECT * FROM observation_from UNION ALL
+                    SELECT * FROM observation_to UNION ALL
+                    SELECT * FROM event_from UNION ALL
+                    SELECT * FROM event_to
                 ) ORDER BY observed_at DESC LIMIT ?
                 """,
-                (node_num, node_num, node_num, node_num, limit),
+                (
+                    node_num, limit, node_num, node_num, limit,
+                    node_num, limit, node_num, node_num, limit, limit,
+                ),
+            ).fetchall()
+        queried = time.monotonic()
+        result = []
+        for row in rows:
+            event = json.loads(row["raw_event"])
+            sent = event.get("from_node") == node_num
+            received = event.get("to_node") == node_num
+            event["node_direction"] = (
+                "both" if sent and received else "sent" if sent else "received"
             )
-            result = []
-            for row in rows:
-                event = json.loads(row["raw_event"])
-                sent = event.get("from_node") == node_num
-                received = event.get("to_node") == node_num
-                event["node_direction"] = (
-                    "both" if sent and received else "sent" if sent else "received"
-                )
-                result.append(event)
-            return result
+            result.append(event)
+        materialized = time.monotonic()
+        self._log_read_timing(
+            "node_activity",
+            queried - started,
+            materialized - queried,
+            len(result),
+        )
+        return result
 
     def transmission(self, packet_id: int, from_node: int, to_node: int) -> dict[str, Any] | None:
         row = self.connection.execute(

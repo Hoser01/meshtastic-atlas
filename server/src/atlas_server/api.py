@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from .diagnostics import RateLimitedWarning
@@ -91,7 +91,7 @@ def create_app(
         yield
         store.close()
 
-    app = FastAPI(title="ATLAS API", version="0.3.53", lifespan=lifespan)
+    app = FastAPI(title="ATLAS API", version="0.3.54", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -131,6 +131,7 @@ def create_app(
     response_cache_refreshing: set[str] = set()
     response_cache_lock = threading.Lock()
     response_cache_load_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+    serialized_cache_dir = Path(database).resolve().parent / "response-cache"
 
     def cached_response(key: str, ttl: float, loader: Any) -> Any:
         """Return stale data immediately while one background thread refreshes it."""
@@ -165,6 +166,57 @@ def create_app(
             with response_cache_lock:
                 response_cache[key] = (time.monotonic(), value)
             return value
+
+    def cached_serialized_response(
+        key: str,
+        ttl: float,
+        loader: Any,
+    ) -> Response:
+        """Cache public JSON bytes in memory and on disk with stale-while-refresh behavior."""
+        cache_path = serialized_cache_dir / f"{key}.json"
+        with response_cache_lock:
+            cached = response_cache.get(key)
+            if cached is None and cache_path.is_file():
+                try:
+                    age = max(0.0, time.time() - cache_path.stat().st_mtime)
+                    response_cache[key] = (time.monotonic() - age, cache_path.read_bytes())
+                except OSError:
+                    pass
+
+        def load_bytes() -> bytes:
+            started = time.monotonic()
+            value = loader()
+            built = time.monotonic()
+            encoded = json.dumps(value, separators=(",", ":"), allow_nan=False).encode()
+            serialized = time.monotonic()
+            if serialized - started >= slow_request_seconds:
+                request_warnings.emit(
+                    f"serialized-response:{key}",
+                    "slow serialized response cache_key=%s build_seconds=%.3f serialization_seconds=%.3f byte_count=%d total_seconds=%.3f",
+                    key,
+                    built - started,
+                    serialized - built,
+                    len(encoded),
+                    serialized - started,
+                )
+            try:
+                serialized_cache_dir.mkdir(parents=True, exist_ok=True)
+                temporary = cache_path.with_suffix(".tmp")
+                temporary.write_bytes(encoded)
+                temporary.replace(cache_path)
+            except OSError:
+                LOGGER.exception("failed to persist serialized response cache key=%s", key)
+            return encoded
+
+        content = cached_response(key, ttl, load_bytes)
+        return Response(
+            content=content,
+            media_type="application/json",
+            headers={
+                "Cache-Control": f"public, max-age=60, stale-while-revalidate={max(0, int(ttl) - 60)}",
+                "X-Atlas-Cache-Freshness": f"{int(ttl)}s",
+            },
+        )
 
     def cached_node_summaries(limit: int) -> list[dict[str, Any]]:
         rows = cached_response("node-summaries", 60, lambda: store.list_node_summaries(10000))
@@ -571,42 +623,61 @@ def create_app(
     def reachability_surface(
         days: float = Query(30, gt=0, le=90),
         limit: int = Query(20000, ge=1000, le=500000),
-    ) -> dict[str, Any]:
+    ) -> Response:
         """Positioned endpoints known to have reached registered collectors over RF."""
-        now = datetime.now(timezone.utc)
-        latest: dict[tuple[str, int, int], dict[str, Any]] = {}
-        for row in store.list_reachability_evidence(limit):
-            if row["observer_id"] not in observer_config or row["observer_id"].startswith("MQTT:"):
-                continue
-            observed = datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
-            positioned = datetime.fromisoformat(row["position_observed_at"].replace("Z", "+00:00"))
-            age = max(0.0, (now - observed).total_seconds())
-            position_age = max(0.0, (observed - positioned).total_seconds())
-            hops = max(0, int(row.get("hop_start") or 0) - int(row.get("hop_limit") or 0))
-            if age > days * 86400 or position_age > 7 * 86400 or hops > 7:
-                continue
-            hour = int(observed.timestamp() // 3600)
-            key = (row["observer_id"], row["transmitter_node"], hour)
-            if key not in latest:
-                latest[key] = {**row, "age_seconds": age, "hops": hops}
+        def build_surface() -> dict[str, Any]:
+            started = time.monotonic()
+            now = datetime.now(timezone.utc)
+            latest: dict[tuple[str, int, int], dict[str, Any]] = {}
+            for row in store.list_reachability_evidence(limit):
+                if row["observer_id"] not in observer_config or row["observer_id"].startswith("MQTT:"):
+                    continue
+                observed = datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
+                positioned = datetime.fromisoformat(row["position_observed_at"].replace("Z", "+00:00"))
+                age = max(0.0, (now - observed).total_seconds())
+                position_age = max(0.0, (observed - positioned).total_seconds())
+                hops = max(0, int(row.get("hop_start") or 0) - int(row.get("hop_limit") or 0))
+                if age > days * 86400 or position_age > 7 * 86400 or hops > 7:
+                    continue
+                hour = int(observed.timestamp() // 3600)
+                key = (row["observer_id"], row["transmitter_node"], hour)
+                if key not in latest:
+                    latest[key] = {**row, "age_seconds": age, "hops": hops}
 
-        features = []
-        for row in latest.values():
-            hop_weight = 1 / (1 + 0.45 * row["hops"])
-            recency = max(.08, 2 ** (-row["age_seconds"] / (7 * 86400)))
-            features.append({"type": "Feature", "properties": {
-                "observer_id": row["observer_id"], "transmitter_node": row["transmitter_node"],
-                "hops": row["hops"], "weight": round(hop_weight * recency, 4),
-                "hop_weight": round(hop_weight, 4), "age_seconds": round(row["age_seconds"]),
-                "evidence": "DIRECT" if row["hops"] == 0 else "MULTIHOP_REACHABILITY",
-            }, "geometry": {"type": "Point", "coordinates": [row["longitude"], row["latitude"]]}})
-        return {"type": "FeatureCollection", "features": features, "metadata": {
-            "sample_count": len(features),
-            "node_count": len({row["transmitter_node"] for row in latest.values()}),
-            "observer_count": len({row["observer_id"] for row in latest.values()}),
-            "window_days": days,
-            "raw_observation_limit": limit,
-        }}
+            features = []
+            for row in latest.values():
+                hop_weight = 1 / (1 + 0.45 * row["hops"])
+                recency = max(.08, 2 ** (-row["age_seconds"] / (7 * 86400)))
+                features.append({"type": "Feature", "properties": {
+                    "observer_id": row["observer_id"], "transmitter_node": row["transmitter_node"],
+                    "hops": row["hops"], "weight": round(hop_weight * recency, 4),
+                    "hop_weight": round(hop_weight, 4), "age_seconds": round(row["age_seconds"]),
+                    "evidence": "DIRECT" if row["hops"] == 0 else "MULTIHOP_REACHABILITY",
+                }, "geometry": {"type": "Point", "coordinates": [row["longitude"], row["latitude"]]}})
+            result = {"type": "FeatureCollection", "features": features, "metadata": {
+                "sample_count": len(features),
+                "node_count": len({row["transmitter_node"] for row in latest.values()}),
+                "observer_count": len({row["observer_id"] for row in latest.values()}),
+                "window_days": days,
+                "raw_observation_limit": limit,
+            }}
+            duration = time.monotonic() - started
+            if duration >= slow_request_seconds:
+                request_warnings.emit(
+                    "reachability-build",
+                    "slow response build operation=reachability_surface duration_seconds=%.3f feature_count=%d",
+                    duration,
+                    len(features),
+                )
+            return result
+
+        ttl = float(os.environ.get("ATLAS_REACHABILITY_CACHE_SECONDS", "300"))
+        cache_days = format(days, "g").replace(".", "_")
+        return cached_serialized_response(
+            f"reachability-{cache_days}-{limit}",
+            ttl,
+            build_surface,
+        )
 
     @app.get("/api/v1/coverage/predicted", response_class=FileResponse)
     def predicted_coverage() -> FileResponse:
